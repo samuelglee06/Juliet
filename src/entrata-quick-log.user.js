@@ -170,7 +170,10 @@
         button.setAttribute('data-lead-name', leadName);
         
         button.addEventListener('click', function(e) {
-            e.stopPropagation(); // Prevent row click event
+            e.preventDefault(); // Prevent default button action
+            e.stopPropagation(); // Prevent event bubbling
+            e.stopImmediatePropagation(); // Stop other handlers on same element
+            
             const id = this.getAttribute('data-lead-id');
             const name = this.getAttribute('data-lead-name');
             
@@ -178,6 +181,7 @@
             alert(`Quick Log clicked!\n\nLead ID: ${id}\nLead Name: ${name}`);
             
             // FR-2 will replace this with actual API logging
+            return false; // Extra safety to prevent any default behavior
         });
         
         return button;
@@ -223,8 +227,8 @@
         let buttonCount = 0;
         
         leadRows.forEach(row => {
-            // Skip if button already exists
-            if (row.querySelector('.juliet-quick-log-cell')) {
+            // Skip if button already exists (check both cell and tracking attribute)
+            if (row.querySelector('.juliet-quick-log-cell') || row.getAttribute('data-juliet-injected') === 'true') {
                 return;
             }
             
@@ -249,6 +253,10 @@
             td.appendChild(button);
             
             row.appendChild(td);
+            
+            // Mark row as injected to prevent duplicates
+            row.setAttribute('data-juliet-injected', 'true');
+            
             buttonCount++;
             
             // Debug: Log first button injection
@@ -300,7 +308,52 @@
     }
     
     /**
+     * Check if buttons are still present and re-inject if needed
+     * This is called by both the MutationObserver and polling mechanism
+     */
+    function checkAndReinject() {
+        const table = document.querySelector('#tbl_prospects');
+        
+        if (!table) {
+            console.log('[Juliet] Table not found, cannot check buttons');
+            return;
+        }
+        
+        const leadRows = table.querySelectorAll('tr.load_lead_details');
+        const existingButtons = table.querySelectorAll('.juliet-quick-log-btn');
+        
+        // Check if button count matches row count
+        if (leadRows.length !== existingButtons.length) {
+            console.log(`[Juliet] Button mismatch detected: ${existingButtons.length} buttons for ${leadRows.length} rows. Re-injecting...`);
+            injectQuickLogButtons();
+        }
+    }
+    
+    // Store polling interval ID to prevent duplicates
+    let pollingIntervalId = null;
+    
+    /**
+     * Start polling mechanism to detect when buttons disappear
+     * Checks every 2 seconds if buttons need re-injection
+     */
+    function startPolling() {
+        // Clear existing interval if any
+        if (pollingIntervalId) {
+            clearInterval(pollingIntervalId);
+        }
+        
+        pollingIntervalId = setInterval(() => {
+            if (isLeadsPage()) {
+                checkAndReinject();
+            }
+        }, 2000); // Check every 2 seconds
+        
+        console.log('[Juliet] Polling started (checks every 2 seconds)');
+    }
+    
+    /**
      * Setup MutationObserver to watch for dynamically loaded leads
+     * Enhanced to detect table replacements, filtering, sorting, and pagination
      */
     function setupMutationObserver() {
         const table = document.querySelector('#tbl_prospects');
@@ -310,35 +363,67 @@
             return;
         }
         
+        // Get the parent container of the table for higher-level observation
+        const tableParent = table.parentElement || document.body;
+        
         const observer = new MutationObserver(mutations => {
-            let shouldReinject = false;
+            let shouldCheck = false;
             
             mutations.forEach(mutation => {
-                // Check if new lead rows were added
+                // Check for added nodes (new rows, pagination)
                 mutation.addedNodes.forEach(node => {
-                    if (node.nodeType === 1 && 
-                        (node.classList?.contains('load_lead_details') || 
-                         node.querySelector?.('.load_lead_details'))) {
-                        shouldReinject = true;
+                    if (node.nodeType === 1) {
+                        // Check if it's a lead row or contains lead rows
+                        if (node.classList?.contains('load_lead_details') || 
+                            node.querySelector?.('.load_lead_details') ||
+                            node.id === 'tbl_prospects') {
+                            shouldCheck = true;
+                        }
                     }
                 });
+                
+                // Check for removed nodes (table replacement, filtering)
+                mutation.removedNodes.forEach(node => {
+                    if (node.nodeType === 1) {
+                        // If lead rows or the table itself were removed
+                        if (node.classList?.contains('load_lead_details') ||
+                            node.querySelector?.('.load_lead_details') ||
+                            node.id === 'tbl_prospects') {
+                            shouldCheck = true;
+                        }
+                    }
+                });
+                
+                // Check for attribute changes on the table (class changes, etc.)
+                if (mutation.type === 'attributes' && mutation.target.id === 'tbl_prospects') {
+                    shouldCheck = true;
+                }
             });
             
-            if (shouldReinject) {
-                console.log('[Juliet] New leads detected, re-injecting buttons...');
-                injectQuickLogButtons();
+            if (shouldCheck) {
+                console.log('[Juliet] Table changes detected by observer, checking buttons...');
+                // Use checkAndReinject instead of direct injection
+                // Add small delay to ensure DOM is stable
+                setTimeout(checkAndReinject, 100);
             }
         });
         
-        // Observe the table body for changes
-        const tbody = table.querySelector('tbody');
-        if (tbody) {
-            observer.observe(tbody, {
-                childList: true,
-                subtree: true
-            });
-            console.log('[Juliet] MutationObserver setup complete');
-        }
+        // Observe at both table and parent level
+        observer.observe(tableParent, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ['class', 'style']
+        });
+        
+        // Also observe the table itself
+        observer.observe(table, {
+            childList: true,
+            subtree: true,
+            attributes: true
+        });
+        
+        console.log('[Juliet] Enhanced MutationObserver setup complete (watching table and parent)');
     }
     
     // ============================================
@@ -406,6 +491,9 @@
             
             // Setup observer for dynamic content
             setupMutationObserver();
+            
+            // Start polling mechanism as backup
+            startPolling();
             
             console.log('[Juliet] ✓ Initialized successfully');
         } catch (error) {
