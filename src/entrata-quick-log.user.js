@@ -334,7 +334,7 @@
     
     /**
      * Start polling mechanism to detect when buttons disappear
-     * Checks every 2 seconds if buttons need re-injection
+     * Checks every 500ms if buttons need re-injection
      */
     function startPolling() {
         // Clear existing interval if any
@@ -346,9 +346,42 @@
             if (isLeadsPage()) {
                 checkAndReinject();
             }
-        }, 2000); // Check every 2 seconds
+        }, 500); // Check every 500ms for faster response
         
-        console.log('[Juliet] Polling started (checks every 2 seconds)');
+        console.log('[Juliet] Polling started (checks every 500ms)');
+    }
+    
+    /**
+     * Setup event listeners for immediate button checks
+     * Triggers on scroll and other user interactions
+     */
+    function setupEventListeners() {
+        // Throttle function to prevent too many calls
+        let scrollTimeout;
+        const throttledCheck = () => {
+            if (scrollTimeout) return;
+            scrollTimeout = setTimeout(() => {
+                checkAndReinject();
+                scrollTimeout = null;
+            }, 100);
+        };
+        
+        // Listen for scroll events (catches lazy loading)
+        window.addEventListener('scroll', throttledCheck, { passive: true });
+        
+        // Listen for click events on table controls (pagination, filters, sort)
+        document.addEventListener('click', (e) => {
+            // Check if click was on table-related controls
+            const target = e.target;
+            if (target.closest('.pagination') || 
+                target.closest('th') || 
+                target.closest('.filter') ||
+                target.tagName === 'TH') {
+                setTimeout(checkAndReinject, 200); // Small delay for AJAX to complete
+            }
+        }, true);
+        
+        console.log('[Juliet] Event listeners setup (scroll, click)');
     }
     
     /**
@@ -404,7 +437,7 @@
                 console.log('[Juliet] Table changes detected by observer, checking buttons...');
                 // Use checkAndReinject instead of direct injection
                 // Add small delay to ensure DOM is stable
-                setTimeout(checkAndReinject, 100);
+                setTimeout(checkAndReinject, 10);
             }
         });
         
@@ -491,6 +524,9 @@
             
             // Setup observer for dynamic content
             setupMutationObserver();
+            
+            // Setup event listeners for immediate detection
+            setupEventListeners();
             
             // Start polling mechanism as backup
             startPolling();
