@@ -1,10 +1,11 @@
 // ==UserScript==
 // @name         Juliet - Entrata Quick Log
 // @namespace    http://tampermonkey.net/
-// @version      0.1.0
+// @version      0.1.1
 // @description  Streamline lead activity logging in Entrata CRM
 // @author       Samuel Lee
-// @match        https://*.entrata.com/*
+// @match        https://*.entrata.com/*module=applications*
+// @match        https://ach.entrata.com/*
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_xmlhttpRequest
@@ -36,25 +37,308 @@
     }
     
     // ============================================
+    // Page Detection
+    // ============================================
+    
+    /**
+     * Check if current page is the leads/applications page
+     * @returns {boolean} True if on leads page
+     */
+    function isLeadsPage() {
+        const url = window.location.href;
+        const hasTable = document.querySelector('#tbl_prospects') !== null;
+        const hasLeadsModule = url.includes('module=applications') || url.includes('module=applicationsxxx');
+        
+        console.log('[Juliet] Page Detection:', {
+            url: url,
+            hasTable: hasTable,
+            hasLeadsModule: hasLeadsModule
+        });
+        
+        return hasTable || hasLeadsModule;
+    }
+    
+    /**
+     * Wait for the leads table to appear in the DOM
+     * @param {number} maxAttempts - Maximum number of attempts
+     * @param {number} interval - Milliseconds between attempts
+     * @returns {Promise<boolean>} True if table found
+     */
+    function waitForTable(maxAttempts = 10, interval = 500) {
+        return new Promise((resolve) => {
+            let attempts = 0;
+            
+            const checkTable = () => {
+                attempts++;
+                const table = document.querySelector('#tbl_prospects');
+                
+                if (table) {
+                    console.log(`[Juliet] Table found after ${attempts} attempt(s)`);
+                    resolve(true);
+                } else if (attempts >= maxAttempts) {
+                    console.log(`[Juliet] Table not found after ${maxAttempts} attempts`);
+                    resolve(false);
+                } else {
+                    setTimeout(checkTable, interval);
+                }
+            };
+            
+            checkTable();
+        });
+    }
+    
+    // ============================================
+    // UI Styling
+    // ============================================
+    
+    /**
+     * Inject CSS styles for Quick Log buttons
+     */
+    function injectButtonStyles() {
+        if (document.getElementById('juliet-styles')) {
+            return; // Styles already injected
+        }
+        
+        const styleTag = document.createElement('style');
+        styleTag.id = 'juliet-styles';
+        styleTag.textContent = `
+            .juliet-quick-log-btn {
+                background: linear-gradient(to bottom, #4a90e2 0%, #357abd 100%) !important;
+                border: 2px solid #2e6da4 !important;
+                border-radius: 4px !important;
+                color: white !important;
+                padding: 8px 16px !important;
+                font-size: 13px !important;
+                font-weight: 700 !important;
+                cursor: pointer !important;
+                white-space: nowrap !important;
+                transition: all 0.2s ease !important;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.2) !important;
+                display: inline-block !important;
+                min-width: 90px !important;
+            }
+            
+            .juliet-quick-log-btn:hover {
+                background: linear-gradient(to bottom, #5aa1f2 0%, #4080cd 100%);
+                box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+                transform: translateY(-1px);
+            }
+            
+            .juliet-quick-log-btn:active {
+                background: linear-gradient(to bottom, #357abd 0%, #2e6da4 100%);
+                box-shadow: inset 0 2px 4px rgba(0,0,0,0.2);
+                transform: translateY(0);
+            }
+            
+            .juliet-quick-log-header {
+                text-align: center;
+                font-weight: bold;
+                white-space: nowrap;
+                min-width: 120px !important;
+                width: 10% !important;
+                background-color: #f5f5f5 !important;
+            }
+            
+            .juliet-quick-log-cell {
+                text-align: center;
+                vertical-align: middle;
+                padding: 8px !important;
+                min-width: 120px !important;
+                width: 10% !important;
+                background-color: #fafafa !important;
+            }
+        `;
+        document.head.appendChild(styleTag);
+        console.log('[Juliet] Button styles injected');
+    }
+    
+    // ============================================
     // UI Injection
     // ============================================
+    
+    /**
+     * Create a Quick Log button for a lead row
+     * @param {string} leadId - The application/lead ID
+     * @param {string} leadName - The lead's name
+     * @returns {HTMLButtonElement} The button element
+     */
+    function createQuickLogButton(leadId, leadName) {
+        const button = document.createElement('button');
+        button.className = 'juliet-quick-log-btn';
+        button.textContent = 'Quick Log';
+        button.setAttribute('data-lead-id', leadId);
+        button.setAttribute('data-lead-name', leadName);
+        
+        button.addEventListener('click', function(e) {
+            e.stopPropagation(); // Prevent row click event
+            const id = this.getAttribute('data-lead-id');
+            const name = this.getAttribute('data-lead-name');
+            
+            console.log('[Juliet] Quick Log clicked for:', { id, name });
+            alert(`Quick Log clicked!\n\nLead ID: ${id}\nLead Name: ${name}`);
+            
+            // FR-2 will replace this with actual API logging
+        });
+        
+        return button;
+    }
     
     /**
      * Inject Preferences button into the page
      * TODO: Implement actual injection logic
      */
     function injectPreferencesButton() {
-        console.log('[Juliet] Preferences button injection - TODO');
-        // Implementation coming soon
+        console.log('[Juliet] Preferences button injection - TODO (future feature)');
+        // Implementation coming in future version
     }
     
     /**
      * Inject Quick Log buttons into each lead row
-     * TODO: Implement actual injection logic
      */
     function injectQuickLogButtons() {
-        console.log('[Juliet] Quick Log buttons injection - TODO');
-        // Implementation coming soon
+        const table = document.querySelector('#tbl_prospects');
+        
+        if (!table) {
+            console.log('[Juliet] Leads table not found on this page');
+            return;
+        }
+        
+        console.log('[Juliet] Leads table found, injecting Quick Log buttons...');
+        
+        // Inject column header
+        const headerRow = table.querySelector('thead tr');
+        if (headerRow && !headerRow.querySelector('.juliet-quick-log-header')) {
+            const th = document.createElement('th');
+            th.className = 'juliet-quick-log-header';
+            th.textContent = 'Quick Log';
+            th.width = '10%'; // Explicit width to ensure visibility
+            th.style.minWidth = '120px'; // Minimum width
+            th.style.backgroundColor = '#f5f5f5'; // Visual confirmation
+            headerRow.appendChild(th);
+            console.log('[Juliet] Header column added with width:', th.width);
+        }
+        
+        // Inject buttons into each lead row
+        const leadRows = table.querySelectorAll('tr.load_lead_details');
+        let buttonCount = 0;
+        
+        leadRows.forEach(row => {
+            // Skip if button already exists
+            if (row.querySelector('.juliet-quick-log-cell')) {
+                return;
+            }
+            
+            const leadId = row.getAttribute('data-appid');
+            if (!leadId) {
+                console.warn('[Juliet] Row missing data-appid attribute:', row);
+                return;
+            }
+            
+            // Extract lead name from the row
+            const leadNameElement = row.querySelector('td:nth-child(2) em');
+            const leadName = leadNameElement ? leadNameElement.textContent.trim() : 'Unknown';
+            
+            // Create button cell
+            const td = document.createElement('td');
+            td.className = 'juliet-quick-log-cell';
+            td.style.minWidth = '120px';
+            td.style.width = '10%';
+            td.style.backgroundColor = '#fafafa';
+            
+            const button = createQuickLogButton(leadId, leadName);
+            td.appendChild(button);
+            
+            row.appendChild(td);
+            buttonCount++;
+            
+            // Debug: Log first button injection
+            if (buttonCount === 1) {
+                console.log('[Juliet] First button cell created:', {
+                    tdClass: td.className,
+                    tdWidth: td.style.width,
+                    buttonText: button.textContent,
+                    parentRow: row
+                });
+            }
+        });
+        
+        console.log(`[Juliet] Successfully injected ${buttonCount} Quick Log buttons`);
+        
+        // Debug: Count actual buttons in DOM
+        const actualButtons = document.querySelectorAll('.juliet-quick-log-btn');
+        const actualCells = document.querySelectorAll('.juliet-quick-log-cell');
+        console.log('[Juliet] DOM verification:', {
+            buttonsInDOM: actualButtons.length,
+            cellsInDOM: actualCells.length,
+            sampleButton: actualButtons[0],
+            sampleCell: actualCells[0]
+        });
+        
+        // Make function available in console for debugging
+        window.julietDebug = function() {
+            const buttons = document.querySelectorAll('.juliet-quick-log-btn');
+            const cells = document.querySelectorAll('.juliet-quick-log-cell');
+            const header = document.querySelector('.juliet-quick-log-header');
+            console.log('Juliet Debug Info:', {
+                buttons: buttons.length,
+                cells: cells.length,
+                header: header,
+                sampleButton: buttons[0],
+                sampleCell: cells[0],
+                tableWidth: document.querySelector('#tbl_prospects')?.offsetWidth
+            });
+            if (buttons[0]) {
+                buttons[0].style.border = '5px solid red';
+                console.log('First button highlighted in RED');
+            }
+            if (header) {
+                header.style.backgroundColor = 'yellow';
+                console.log('Header highlighted in YELLOW');
+            }
+        };
+        console.log('[Juliet] Run window.julietDebug() in console to highlight elements');
+    }
+    
+    /**
+     * Setup MutationObserver to watch for dynamically loaded leads
+     */
+    function setupMutationObserver() {
+        const table = document.querySelector('#tbl_prospects');
+        
+        if (!table) {
+            console.log('[Juliet] Table not found, skipping MutationObserver setup');
+            return;
+        }
+        
+        const observer = new MutationObserver(mutations => {
+            let shouldReinject = false;
+            
+            mutations.forEach(mutation => {
+                // Check if new lead rows were added
+                mutation.addedNodes.forEach(node => {
+                    if (node.nodeType === 1 && 
+                        (node.classList?.contains('load_lead_details') || 
+                         node.querySelector?.('.load_lead_details'))) {
+                        shouldReinject = true;
+                    }
+                });
+            });
+            
+            if (shouldReinject) {
+                console.log('[Juliet] New leads detected, re-injecting buttons...');
+                injectQuickLogButtons();
+            }
+        });
+        
+        // Observe the table body for changes
+        const tbody = table.querySelector('tbody');
+        if (tbody) {
+            observer.observe(tbody, {
+                childList: true,
+                subtree: true
+            });
+            console.log('[Juliet] MutationObserver setup complete');
+        }
     }
     
     // ============================================
@@ -93,17 +377,40 @@
     /**
      * Initialize Juliet when page loads
      */
-    function init() {
+    async function init() {
         console.log('[Juliet] Initializing...');
         
         // Check if we're on the leads page
-        // TODO: Add proper page detection logic
+        if (!isLeadsPage()) {
+            console.log('[Juliet] Not on leads page, skipping initialization');
+            return;
+        }
         
-        // Inject UI elements
-        injectPreferencesButton();
-        injectQuickLogButtons();
+        console.log('[Juliet] Leads page detected!');
         
-        console.log('[Juliet] Initialized successfully');
+        // Wait for the table to load (Entrata loads content dynamically)
+        const tableFound = await waitForTable();
+        
+        if (!tableFound) {
+            console.warn('[Juliet] Table not found after waiting. Script may not work on this page.');
+            return;
+        }
+        
+        try {
+            // Inject button styles
+            injectButtonStyles();
+            
+            // Inject UI elements
+            injectPreferencesButton();
+            injectQuickLogButtons();
+            
+            // Setup observer for dynamic content
+            setupMutationObserver();
+            
+            console.log('[Juliet] ✓ Initialized successfully');
+        } catch (error) {
+            console.error('[Juliet] ✗ Initialization failed:', error);
+        }
     }
     
     // Wait for page to be fully loaded
