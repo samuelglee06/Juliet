@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Juliet - Entrata Quick Log
 // @namespace    http://tampermonkey.net/
-// @version      0.1.1
+// @version      0.2.0
 // @description  Streamline lead activity logging in Entrata CRM
 // @author       Samuel Lee
 // @match        https://*.entrata.com/*module=applications*
@@ -396,13 +396,31 @@
             e.stopPropagation(); // Prevent event bubbling
             e.stopImmediatePropagation(); // Stop other handlers on same element
             
-            const id = this.getAttribute('data-lead-id');
-            const name = this.getAttribute('data-lead-name');
+            const leadId = this.getAttribute('data-lead-id');
+            const leadName = this.getAttribute('data-lead-name');
             
-            console.log('[Juliet] Quick Log clicked for:', { id, name });
-            alert(`Quick Log clicked!\n\nLead ID: ${id}\nLead Name: ${name}`);
+            console.log('[Juliet] Quick Log clicked for:', { leadId, leadName });
             
-            // FR-2 will replace this with actual API logging
+            // Get saved template
+            const template = getTemplate();
+            
+            if (!template) {
+                alert('Please configure your activity template first.\n\nClick the Preferences button to set up your template.');
+                return false;
+            }
+            
+            // Find the row to extract customer ID
+            const row = this.closest('tr.load_lead_details');
+            const customerId = getCustomerId(row);
+            
+            if (!customerId) {
+                alert('Error: Could not find customer ID.\n\nPlease report this issue.');
+                return false;
+            }
+            
+            // Call API to log activity
+            logActivity(leadId, customerId, template, this);
+            
             return false; // Extra safety to prevent any default behavior
         });
         
@@ -1018,15 +1036,177 @@
     // ============================================
     
     /**
+     * Map outcome names to Entrata event_result_id values
+     */
+    function getOutcomeId(outcomeName) {
+        const outcomeMap = {
+            'Connected': 1505,
+            'Left Voicemail': 1085,
+            'No Answer': 1083,
+            'Wrong Number': 1513
+        };
+        return outcomeMap[outcomeName] || null;
+    }
+    
+    /**
+     * Get customer ID - for now, use application ID as customer ID
+     * Customer ID is not available in table, only on detail page
+     * If API rejects this, we'll implement background fetch as fallback
+     */
+    function getCustomerId(leadRow) {
+        // Try using application ID as customer ID (they may be the same)
+        const appId = leadRow.getAttribute('data-appid');
+        
+        if (!appId) {
+            console.warn('[Juliet] Could not find application ID in row');
+            return null;
+        }
+        
+        console.log('[Juliet] Using application ID as customer ID:', appId);
+        return appId;
+    }
+    
+    /**
      * Log activity to Entrata API
      * @param {string} leadId - The ID of the lead to log activity for
+     * @param {string} customerId - The customer ID (using application ID for now)
      * @param {object} template - The activity template to use
-     * TODO: Reverse engineer Entrata API endpoints and payload structure
+     * @param {HTMLButtonElement} button - The button element for visual feedback
      */
-    function logActivity(leadId, template) {
-        console.log('[Juliet] Logging activity for lead:', leadId, 'with template:', template);
-        // Implementation coming soon
-        // Will use GM_xmlhttpRequest to make API call
+    function logActivity(leadId, customerId, template, button) {
+        console.log('[Juliet] Logging activity for lead:', leadId, 'customer:', customerId);
+        
+        // Validate required data
+        if (!leadId) {
+            showError(button, 'Missing lead ID');
+            return;
+        }
+        
+        if (!customerId) {
+            showError(button, 'Missing customer ID');
+            return;
+        }
+        
+        // Show loading state
+        button.disabled = true;
+        button.textContent = 'Logging...';
+        button.style.background = 'linear-gradient(to bottom, #f0ad4e 0%, #ec971f 100%)';
+        
+        // Get outcome ID
+        const outcomeId = getOutcomeId(template.outcome);
+        if (!outcomeId) {
+            showError(button, `Invalid outcome: ${template.outcome}`);
+            return;
+        }
+        
+        // Build current date/time in Entrata's format
+        const now = new Date();
+        const dateFormatted = `${(now.getMonth() + 1).toString().padStart(2, '0')}/${now.getDate().toString().padStart(2, '0')}/${now.getFullYear()}`;
+        const dateISO = `${now.getFullYear()}-${(now.getMonth() + 1).toString().padStart(2, '0')}-${now.getDate().toString().padStart(2, '0')}`;
+        let hours = now.getHours();
+        const ampm = hours >= 12 ? 'pm' : 'am';
+        hours = hours % 12 || 12;
+        const timeFormatted = `${hours.toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}${ampm}`;
+        
+        // Event type ID (4 = Outgoing Call)
+        const eventTypeId = 4;
+        
+        // Build URL with query parameters
+        const baseUrl = 'https://ach.entrata.com/';
+        const params = new URLSearchParams({
+            'module': 'application_historyxxx',
+            'action': 'insert_or_update_application_history',
+            'application[id]': leadId,
+            'customer[id]': customerId,
+            'event[event_type_id]': eventTypeId,
+            'event[id]': '',
+            'calendar_event[id]': '',
+            'calendar_event[event_id]': '',
+            'application[property_id]': '',
+            'is_from_add_activity_log': '1'
+        });
+        
+        // Build form data (note: duplicated event[start_date] is intentional - Entrata expects both formats)
+        const formData = new URLSearchParams();
+        formData.append('event[notes]', template.notes);
+        formData.append('event[start_date]', dateFormatted);
+        formData.append('event[start_date]', dateISO);
+        formData.append('event[start_time]', timeFormatted);
+        formData.append('event[event_result_id]', outcomeId);
+        formData.append('is_event_result_required', '1');
+        
+        const fullUrl = `${baseUrl}?${params.toString()}`;
+        
+        console.log('[Juliet] API Request:', {
+            url: fullUrl,
+            formData: formData.toString(),
+            template: template
+        });
+        
+        // Make API request using Tampermonkey's GM_xmlhttpRequest
+        GM_xmlhttpRequest({
+            method: 'POST',
+            url: fullUrl,
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'X-Requested-With': 'XMLHttpRequest'
+            },
+            data: formData.toString(),
+            onload: function(response) {
+                console.log('[Juliet] API Response:', {
+                    status: response.status,
+                    statusText: response.statusText,
+                    responsePreview: response.responseText.substring(0, 200)
+                });
+                
+                if (response.status >= 200 && response.status < 300) {
+                    showSuccess(button);
+                } else {
+                    showError(button, `Error ${response.status}`);
+                }
+            },
+            onerror: function(error) {
+                console.error('[Juliet] API Network Error:', error);
+                showError(button, 'Network error');
+            }
+        });
+    }
+    
+    /**
+     * Show success state on button
+     */
+    function showSuccess(button) {
+        button.textContent = '✓ Logged';
+        button.style.background = 'linear-gradient(to bottom, #5cb85c 0%, #449d44 100%)';
+        button.style.borderColor = '#398439';
+        button.disabled = true;
+        
+        // Reset after 3 seconds to allow logging more leads
+        setTimeout(() => {
+            button.textContent = 'Quick Log';
+            button.style.background = 'linear-gradient(to bottom, #4a90e2 0%, #357abd 100%)';
+            button.style.borderColor = '#2e6da4';
+            button.disabled = false;
+        }, 3000);
+    }
+    
+    /**
+     * Show error state on button
+     */
+    function showError(button, errorInfo) {
+        button.textContent = '✗ Error';
+        button.style.background = 'linear-gradient(to bottom, #d9534f 0%, #c9302c 100%)';
+        button.style.borderColor = '#ac2925';
+        
+        console.error('[Juliet] Activity logging failed:', errorInfo);
+        
+        // Reset after 3 seconds
+        setTimeout(() => {
+            button.textContent = 'Quick Log';
+            button.style.background = 'linear-gradient(to bottom, #4a90e2 0%, #357abd 100%)';
+            button.style.borderColor = '#2e6da4';
+            button.disabled = false;
+        }, 3000);
     }
     
     // ============================================
