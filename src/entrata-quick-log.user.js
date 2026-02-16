@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         Juliet - Entrata Quick Log
+// @name         Juliet 
 // @namespace    http://tampermonkey.net/
 // @version      0.2.0
 // @description  Streamline lead activity logging in Entrata CRM
