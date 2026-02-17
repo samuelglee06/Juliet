@@ -174,4 +174,4 @@ This project was born from real frustration with inefficient enterprise software
 
 ---
 
-*"What's in a name? That which we call a rose by any other name would smell as sweet."* — Juliet, Romeo and Juliet (Act 2, Scene 2)
+*"What's in a name? That which we call a rose by any other name would smell as sweet."* — Juliet 
