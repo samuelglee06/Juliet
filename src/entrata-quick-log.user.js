@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Juliet 
 // @namespace    http://tampermonkey.net/
-// @version      0.2.0
+// @version      0.2.1
 // @description  Streamline lead activity logging in Entrata CRM
 // @author       Samuel Lee
 // @match        https://*.entrata.com/*module=applications*
@@ -1174,20 +1174,13 @@
     
     /**
      * Show success state on button
+     * Button stays in success state permanently for visual tracking
      */
     function showSuccess(button) {
         button.textContent = '✓ Logged';
         button.style.background = 'linear-gradient(to bottom, #5cb85c 0%, #449d44 100%)';
         button.style.borderColor = '#398439';
         button.disabled = true;
-        
-        // Reset after 3 seconds to allow logging more leads
-        setTimeout(() => {
-            button.textContent = 'Quick Log';
-            button.style.background = 'linear-gradient(to bottom, #4a90e2 0%, #357abd 100%)';
-            button.style.borderColor = '#2e6da4';
-            button.disabled = false;
-        }, 3000);
     }
     
     /**
