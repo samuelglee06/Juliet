@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Juliet 
 // @namespace    http://tampermonkey.net/
-// @version      0.2.1
+// @version      0.3.0
 // @description  Streamline lead activity logging in Entrata CRM
 // @author       Samuel Lee
 // @match        https://*.entrata.com/*module=applications*
@@ -20,7 +20,43 @@
     // ============================================
     
     const STORAGE_KEY = 'juliet_activity_template';
-    
+
+    // Tracks whether the Cmd (Meta) key is currently held down
+    let cmdHeld = false;
+
+    /**
+     * Setup Cmd key listeners to toggle quick-log mode visual indicator
+     */
+    function setupCmdKeyListeners() {
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Meta' && !cmdHeld) {
+                cmdHeld = true;
+                document.querySelectorAll('.juliet-quick-log-btn').forEach(btn => {
+                    btn.classList.add('juliet-quick-log-btn--cmd');
+                });
+            }
+        });
+
+        document.addEventListener('keyup', (e) => {
+            if (e.key === 'Meta') {
+                cmdHeld = false;
+                document.querySelectorAll('.juliet-quick-log-btn').forEach(btn => {
+                    btn.classList.remove('juliet-quick-log-btn--cmd');
+                });
+            }
+        });
+
+        // Safety: clear cmd state if window loses focus mid-hold
+        window.addEventListener('blur', () => {
+            cmdHeld = false;
+            document.querySelectorAll('.juliet-quick-log-btn').forEach(btn => {
+                btn.classList.remove('juliet-quick-log-btn--cmd');
+            });
+        });
+
+        console.log('[Juliet] Cmd key listeners setup');
+    }
+
     /**
      * Get saved activity template from localStorage
      */
@@ -369,6 +405,12 @@
                 opacity: 0.5;
                 cursor: not-allowed;
             }
+
+            /* Cmd-held quick-log mode indicator */
+            .juliet-quick-log-btn--cmd {
+                background: linear-gradient(to bottom, #1d3557 0%, #0d2137 100%) !important;
+                border-color: #0a1a2e !important;
+            }
         `;
         document.head.appendChild(styleTag);
         console.log('[Juliet] Button and modal styles injected');
@@ -392,36 +434,39 @@
         button.setAttribute('data-lead-name', leadName);
         
         button.addEventListener('click', function(e) {
-            e.preventDefault(); // Prevent default button action
-            e.stopPropagation(); // Prevent event bubbling
-            e.stopImmediatePropagation(); // Stop other handlers on same element
-            
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+
             const leadId = this.getAttribute('data-lead-id');
             const leadName = this.getAttribute('data-lead-name');
-            
-            console.log('[Juliet] Quick Log clicked for:', { leadId, leadName });
-            
-            // Get saved template
+
+            console.log('[Juliet] Log button clicked for:', { leadId, leadName, quickMode: e.metaKey || cmdHeld });
+
             const template = getTemplate();
-            
+
             if (!template) {
                 alert('Please configure your activity template first.\n\nClick the Preferences button to set up your template.');
                 return false;
             }
-            
-            // Find the row to extract customer ID
+
             const row = this.closest('tr.load_lead_details');
             const customerId = getCustomerId(row);
-            
+
             if (!customerId) {
                 alert('Error: Could not find customer ID.\n\nPlease report this issue.');
                 return false;
             }
-            
-            // Call API to log activity
-            logActivity(leadId, customerId, template, this);
-            
-            return false; // Extra safety to prevent any default behavior
+
+            if (e.metaKey || cmdHeld) {
+                // Cmd+click: instant log with saved template
+                logActivity(leadId, customerId, template, this);
+            } else {
+                // Normal click: open pre-filled log modal
+                openLogModal(leadId, customerId, template, this);
+            }
+
+            return false;
         });
         
         return button;
@@ -797,7 +842,188 @@
     // ============================================
     // Modal Management
     // ============================================
-    
+
+    /**
+     * Open a pre-filled log modal for a specific lead, allowing the user to
+     * review and edit fields before submitting.
+     * @param {string} leadId
+     * @param {string} customerId
+     * @param {object} template - Pre-filled from saved template
+     * @param {HTMLButtonElement} rowButton - Row button for success/error feedback
+     */
+    function openLogModal(leadId, customerId, template, rowButton) {
+        console.log('[Juliet] Opening log modal for lead:', leadId);
+
+        const backdrop = document.createElement('div');
+        backdrop.className = 'juliet-modal-backdrop';
+
+        const modal = document.createElement('div');
+        modal.className = 'juliet-modal';
+
+        // Header
+        const header = document.createElement('div');
+        header.className = 'juliet-modal-header';
+        const title = document.createElement('h2');
+        title.className = 'juliet-modal-title';
+        title.textContent = 'Log Activity';
+        header.appendChild(title);
+
+        // Body
+        const body = document.createElement('div');
+        body.className = 'juliet-modal-body';
+
+        // Event Type dropdown
+        const eventTypeGroup = document.createElement('div');
+        eventTypeGroup.className = 'juliet-form-group';
+        const eventTypeLabel = document.createElement('label');
+        eventTypeLabel.className = 'juliet-form-label';
+        eventTypeLabel.textContent = 'Event Type';
+        const eventTypeSelect = document.createElement('select');
+        eventTypeSelect.className = 'juliet-form-select';
+
+        ['Outgoing Call', 'Outgoing Text'].forEach(type => {
+            const opt = document.createElement('option');
+            opt.value = type;
+            opt.textContent = type;
+            if (template.eventType === type) opt.selected = true;
+            eventTypeSelect.appendChild(opt);
+        });
+
+        eventTypeGroup.appendChild(eventTypeLabel);
+        eventTypeGroup.appendChild(eventTypeSelect);
+
+        // Call Outcome radio buttons
+        const outcomeGroup = document.createElement('div');
+        outcomeGroup.className = 'juliet-form-group';
+        const outcomeLabel = document.createElement('label');
+        outcomeLabel.className = 'juliet-form-label';
+        outcomeLabel.textContent = 'Call Outcome';
+        outcomeGroup.appendChild(outcomeLabel);
+
+        const radioGroup = document.createElement('div');
+        radioGroup.className = 'juliet-radio-group';
+
+        const outcomes = ['Connected', 'Left Voicemail', 'No Answer', 'Wrong Number'];
+        outcomes.forEach((outcome, index) => {
+            const optionDiv = document.createElement('div');
+            optionDiv.className = 'juliet-radio-option';
+
+            const radio = document.createElement('input');
+            radio.type = 'radio';
+            radio.name = 'juliet-log-outcome';
+            radio.value = outcome;
+            radio.id = `juliet-log-outcome-${index}`;
+            radio.checked = template.outcome === outcome || (!template.outcome && index === 0);
+
+            const label = document.createElement('label');
+            label.setAttribute('for', `juliet-log-outcome-${index}`);
+            label.textContent = outcome;
+
+            optionDiv.appendChild(radio);
+            optionDiv.appendChild(label);
+            radioGroup.appendChild(optionDiv);
+        });
+
+        outcomeGroup.appendChild(radioGroup);
+
+        // Notes textarea
+        const notesGroup = document.createElement('div');
+        notesGroup.className = 'juliet-form-group';
+        const notesLabel = document.createElement('label');
+        notesLabel.className = 'juliet-form-label';
+        notesLabel.textContent = 'Notes (Required)';
+        const notesTextarea = document.createElement('textarea');
+        notesTextarea.className = 'juliet-form-textarea';
+        notesTextarea.placeholder = 'Enter activity notes...';
+        notesTextarea.value = template.notes || '';
+
+        const validationMsg = document.createElement('div');
+        validationMsg.className = 'juliet-validation-msg';
+        validationMsg.textContent = 'Notes field is required';
+
+        notesGroup.appendChild(notesLabel);
+        notesGroup.appendChild(notesTextarea);
+        notesGroup.appendChild(validationMsg);
+
+        body.appendChild(eventTypeGroup);
+        body.appendChild(outcomeGroup);
+        body.appendChild(notesGroup);
+
+        // Footer
+        const footer = document.createElement('div');
+        footer.className = 'juliet-modal-footer';
+
+        const cancelBtn = document.createElement('button');
+        cancelBtn.className = 'juliet-btn juliet-btn-cancel';
+        cancelBtn.textContent = 'Cancel';
+
+        const submitBtn = document.createElement('button');
+        submitBtn.className = 'juliet-btn juliet-btn-primary';
+        submitBtn.textContent = 'Log Activity';
+
+        const updateSubmitBtn = () => {
+            submitBtn.disabled = notesTextarea.value.trim().length === 0;
+        };
+        updateSubmitBtn();
+        notesTextarea.addEventListener('input', updateSubmitBtn);
+
+        footer.appendChild(cancelBtn);
+        footer.appendChild(submitBtn);
+
+        modal.appendChild(header);
+        modal.appendChild(body);
+        modal.appendChild(footer);
+        backdrop.appendChild(modal);
+
+        const closeModal = () => {
+            backdrop.remove();
+            document.removeEventListener('keydown', escapeHandler);
+        };
+
+        const escapeHandler = (e) => {
+            if (e.key === 'Escape') closeModal();
+        };
+
+        cancelBtn.addEventListener('click', closeModal);
+        backdrop.addEventListener('click', (e) => {
+            if (e.target === backdrop) closeModal();
+        });
+        document.addEventListener('keydown', escapeHandler);
+
+        submitBtn.addEventListener('click', () => {
+            const notes = notesTextarea.value.trim();
+
+            if (notes.length === 0) {
+                validationMsg.classList.add('show');
+                notesTextarea.focus();
+                return;
+            }
+
+            const selectedOutcome = modal.querySelector('input[name="juliet-log-outcome"]:checked');
+            if (!selectedOutcome) {
+                alert('Please select a call outcome');
+                return;
+            }
+
+            const editedTemplate = {
+                eventType: eventTypeSelect.value,
+                outcome: selectedOutcome.value,
+                notes
+            };
+
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Logging...';
+
+            logActivity(leadId, customerId, editedTemplate, rowButton, () => {
+                closeModal();
+            });
+        });
+
+        document.body.appendChild(backdrop);
+        notesTextarea.focus();
+        notesTextarea.select();
+    }
+
     /**
      * Open preferences modal for template configuration
      */
@@ -1071,9 +1297,10 @@
      * @param {string} leadId - The ID of the lead to log activity for
      * @param {string} customerId - The customer ID (using application ID for now)
      * @param {object} template - The activity template to use
-     * @param {HTMLButtonElement} button - The button element for visual feedback
+     * @param {HTMLButtonElement} button - The row button element for visual feedback
+     * @param {Function} [onSuccess] - Optional callback invoked after success state is shown
      */
-    function logActivity(leadId, customerId, template, button) {
+    function logActivity(leadId, customerId, template, button, onSuccess) {
         console.log('[Juliet] Logging activity for lead:', leadId, 'customer:', customerId);
         
         // Validate required data
@@ -1161,6 +1388,7 @@
                 
                 if (response.status >= 200 && response.status < 300) {
                     showSuccess(button);
+                    if (onSuccess) onSuccess();
                 } else {
                     showError(button, `Error ${response.status}`);
                 }
@@ -1301,6 +1529,9 @@
             
             // Setup event listeners for immediate detection
             setupEventListeners();
+
+            // Setup Cmd key listeners for quick-log mode
+            setupCmdKeyListeners();
             
             // Start polling mechanism as backup
             startPolling();
