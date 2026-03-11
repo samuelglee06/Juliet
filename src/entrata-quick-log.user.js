@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Juliet 
 // @namespace    http://tampermonkey.net/
-// @version      0.3.0
+// @version      0.3.1
 // @description  Streamline lead activity logging in Entrata CRM
 // @author       Samuel Lee
 // @match        https://*.entrata.com/*module=applications*
@@ -144,15 +144,18 @@
                 border: 2px solid #2e6da4 !important;
                 border-radius: 4px !important;
                 color: white !important;
-                padding: 8px 16px !important;
-                font-size: 13px !important;
+                padding: 0 !important;
+                font-size: 18px !important;
                 font-weight: 700 !important;
                 cursor: pointer !important;
-                white-space: nowrap !important;
                 transition: all 0.2s ease !important;
                 box-shadow: 0 2px 4px rgba(0,0,0,0.2) !important;
-                display: inline-block !important;
-                min-width: 90px !important;
+                display: inline-flex !important;
+                align-items: center !important;
+                justify-content: center !important;
+                width: 34px !important;
+                height: 34px !important;
+                min-width: unset !important;
             }
             
             .juliet-quick-log-btn:hover {
@@ -429,7 +432,8 @@
     function createQuickLogButton(leadId, leadName) {
         const button = document.createElement('button');
         button.className = 'juliet-quick-log-btn';
-        button.textContent = 'Quick Log';
+        button.textContent = '📝';
+        button.title = 'Log activity (Cmd+click to quick log)';
         button.setAttribute('data-lead-id', leadId);
         button.setAttribute('data-lead-name', leadName);
         
@@ -1316,7 +1320,7 @@
         
         // Show loading state
         button.disabled = true;
-        button.textContent = 'Logging...';
+        button.textContent = '⏳';
         button.style.background = 'linear-gradient(to bottom, #f0ad4e 0%, #ec971f 100%)';
         
         // Get outcome ID
@@ -1405,7 +1409,7 @@
      * Button stays in success state permanently for visual tracking
      */
     function showSuccess(button) {
-        button.textContent = '✓ Logged';
+        button.textContent = '✅';
         button.style.background = 'linear-gradient(to bottom, #5cb85c 0%, #449d44 100%)';
         button.style.borderColor = '#398439';
         button.disabled = true;
@@ -1415,7 +1419,7 @@
      * Show error state on button
      */
     function showError(button, errorInfo) {
-        button.textContent = '✗ Error';
+        button.textContent = '❌';
         button.style.background = 'linear-gradient(to bottom, #d9534f 0%, #c9302c 100%)';
         button.style.borderColor = '#ac2925';
         
@@ -1423,7 +1427,7 @@
         
         // Reset after 3 seconds
         setTimeout(() => {
-            button.textContent = 'Quick Log';
+            button.textContent = '📝';
             button.style.background = 'linear-gradient(to bottom, #4a90e2 0%, #357abd 100%)';
             button.style.borderColor = '#2e6da4';
             button.disabled = false;
@@ -1446,9 +1450,9 @@
         
         const floatingBtn = document.createElement('button');
         floatingBtn.id = 'juliet-floating-prefs';
-        floatingBtn.textContent = '⚙️ Preferences';
+        floatingBtn.textContent = '⚙️';
         floatingBtn.title = 'Configure Quick Log template';
-        
+
         // Override all styles to make it highly visible
         floatingBtn.style.cssText = `
             position: fixed !important;
@@ -1459,13 +1463,16 @@
             border: 2px solid #398439 !important;
             border-radius: 6px !important;
             color: white !important;
-            padding: 12px 20px !important;
-            font-size: 14px !important;
+            padding: 0 !important;
+            font-size: 20px !important;
             font-weight: 700 !important;
             cursor: pointer !important;
-            white-space: nowrap !important;
+            width: 44px !important;
+            height: 44px !important;
             box-shadow: 0 4px 12px rgba(0,0,0,0.4) !important;
-            display: block !important;
+            display: inline-flex !important;
+            align-items: center !important;
+            justify-content: center !important;
             visibility: visible !important;
             opacity: 1 !important;
         `;
