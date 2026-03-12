@@ -156,6 +156,10 @@ main
 	- **Priority:** P3
 	- **Description:** Implement a "Hover-to-Preview" feature showing a lead summary card on row hover, including recent activity history and contact status.
 
+- **Post-v3 — Analytics & A/B Testing**
+	- **Priority:** P4
+	- **Description:** Instrument consultant interactions (log, text, call rates) to support A/B testing of workflow variations and surface performance insights.
+
 
 ---
 ## 10. Changelog
