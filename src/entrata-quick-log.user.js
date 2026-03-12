@@ -9,6 +9,8 @@
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_xmlhttpRequest
+// @connect      api-prod-client.heymarket.com
+// @connect      app.heymarket.com
 // @run-at       document-end
 // ==/UserScript==
 
@@ -22,6 +24,9 @@
     const STORAGE_KEY = 'juliet_activity_template';
     const TEXT_TEMPLATE_STORAGE_KEY = 'juliet_text_template';
     const HEYMARKET_CONFIG_STORAGE_KEY = 'juliet_heymarket_config';
+    const HEYMARKET_API_BASE = 'https://api-prod-client.heymarket.com';
+    const HEYMARKET_COMPLIANCE_PATH = '/v2/message/compliance';
+    const HEYMARKET_SEND_PATH = '/v3/message/send';
 
     // Tracks whether the Cmd (Meta) key is currently held down
     let cmdHeld = false;
@@ -88,12 +93,38 @@
     }
 
     function getHeymarketConfig() {
+        const emptyConfig = {
+            securityToken: '',
+            teamId: '',
+            inboxId: ''
+        };
+
         const stored = localStorage.getItem(HEYMARKET_CONFIG_STORAGE_KEY);
-        return stored ? JSON.parse(stored) : null;
+        if (!stored) {
+            return emptyConfig;
+        }
+
+        try {
+            const parsed = JSON.parse(stored);
+            return {
+                securityToken: parsed?.securityToken || '',
+                teamId: parsed?.teamId || '',
+                inboxId: parsed?.inboxId || ''
+            };
+        } catch (error) {
+            console.warn('[Juliet] Invalid Heymarket config in localStorage, resetting to defaults', error);
+            return emptyConfig;
+        }
     }
 
     function saveHeymarketConfig(config) {
-        localStorage.setItem(HEYMARKET_CONFIG_STORAGE_KEY, JSON.stringify(config));
+        const current = getHeymarketConfig();
+        const merged = {
+            securityToken: config?.securityToken ?? current.securityToken,
+            teamId: config?.teamId ?? current.teamId,
+            inboxId: config?.inboxId ?? current.inboxId
+        };
+        localStorage.setItem(HEYMARKET_CONFIG_STORAGE_KEY, JSON.stringify(merged));
     }
 
     function normalizePhoneNumber(rawPhone) {
@@ -1600,34 +1631,55 @@
         messageGroup.appendChild(messageTextarea);
         messageGroup.appendChild(validationMsg);
 
-        const endpointGroup = document.createElement('div');
-        endpointGroup.className = 'juliet-form-group';
-        const endpointLabel = document.createElement('label');
-        endpointLabel.className = 'juliet-form-label';
-        endpointLabel.textContent = 'Heymarket Endpoint (Optional for now)';
-        const endpointInput = document.createElement('input');
-        endpointInput.className = 'juliet-form-select';
-        endpointInput.type = 'text';
-        endpointInput.placeholder = 'https://api.heymarket.com/...';
-        endpointInput.value = existingConfig.endpoint || '';
-        endpointGroup.appendChild(endpointLabel);
-        endpointGroup.appendChild(endpointInput);
-
         const tokenGroup = document.createElement('div');
         tokenGroup.className = 'juliet-form-group';
         const tokenLabel = document.createElement('label');
         tokenLabel.className = 'juliet-form-label';
-        tokenLabel.textContent = 'Session Token / Auth Header (Optional fallback)';
+        tokenLabel.textContent = 'X-Emb-Security-Token';
         const tokenInput = document.createElement('textarea');
         tokenInput.className = 'juliet-form-textarea';
-        tokenInput.placeholder = 'Paste token/header details for manual fallback...';
-        tokenInput.value = existingConfig.authToken || '';
+        tokenInput.placeholder = 'Paste X-Emb-Security-Token from Heymarket request headers...';
+        tokenInput.value = existingConfig.securityToken || '';
         tokenGroup.appendChild(tokenLabel);
         tokenGroup.appendChild(tokenInput);
 
+        const teamGroup = document.createElement('div');
+        teamGroup.className = 'juliet-form-group';
+        const teamLabel = document.createElement('label');
+        teamLabel.className = 'juliet-form-label';
+        teamLabel.textContent = 'Team ID';
+        const teamInput = document.createElement('input');
+        teamInput.className = 'juliet-form-select';
+        teamInput.type = 'text';
+        teamInput.placeholder = 'Example: 68917';
+        teamInput.value = existingConfig.teamId || '';
+        teamGroup.appendChild(teamLabel);
+        teamGroup.appendChild(teamInput);
+
+        const inboxGroup = document.createElement('div');
+        inboxGroup.className = 'juliet-form-group';
+        const inboxLabel = document.createElement('label');
+        inboxLabel.className = 'juliet-form-label';
+        inboxLabel.textContent = 'Inbox ID';
+        const inboxInput = document.createElement('input');
+        inboxInput.className = 'juliet-form-select';
+        inboxInput.type = 'text';
+        inboxInput.placeholder = 'Example: 86613';
+        inboxInput.value = existingConfig.inboxId || '';
+        inboxGroup.appendChild(inboxLabel);
+        inboxGroup.appendChild(inboxInput);
+
+        const sessionNotice = document.createElement('div');
+        sessionNotice.style.fontSize = '12px';
+        sessionNotice.style.color = '#666';
+        sessionNotice.style.marginTop = '-6px';
+        sessionNotice.textContent = 'Saved across sessions: token/team/inbox persist in localStorage on this browser profile.';
+
         body.appendChild(messageGroup);
-        body.appendChild(endpointGroup);
         body.appendChild(tokenGroup);
+        body.appendChild(teamGroup);
+        body.appendChild(inboxGroup);
+        body.appendChild(sessionNotice);
 
         const footer = document.createElement('div');
         footer.className = 'juliet-modal-footer';
@@ -1670,16 +1722,25 @@
 
         saveBtn.addEventListener('click', () => {
             const message = messageTextarea.value.trim();
+            const securityToken = tokenInput.value.trim();
+            const teamId = teamInput.value.trim();
+            const inboxId = inboxInput.value.trim();
             if (message.length === 0) {
                 validationMsg.classList.add('show');
                 messageTextarea.focus();
                 return;
             }
 
+            if ((teamId && !/^\d+$/.test(teamId)) || (inboxId && !/^\d+$/.test(inboxId))) {
+                alert('Team ID and Inbox ID must be numeric.');
+                return;
+            }
+
             saveTextTemplate({ message });
             saveHeymarketConfig({
-                endpoint: endpointInput.value.trim(),
-                authToken: tokenInput.value.trim()
+                securityToken,
+                teamId,
+                inboxId
             });
 
             saveBtn.textContent = '✓ Saved!';
@@ -1843,27 +1904,104 @@
         button.style.background = 'linear-gradient(to bottom, #f0ad4e 0%, #ec971f 100%)';
 
         const config = getHeymarketConfig() || {};
-        const hasManualFallback = Boolean(config.endpoint && config.authToken);
+        const hasSessionConfig = Boolean(config.securityToken && config.teamId && config.inboxId);
 
-        // Placeholder integration path:
-        // Step 1 (future): attempt to auto-bootstrap auth from active Heymarket session.
-        // Step 2: if not available, fallback to manually saved endpoint/auth token.
-        const canSend = false;
-
-        console.log('[Juliet] Heymarket send requested (stub mode):', {
-            phone,
-            messageLength: message?.length || 0,
-            hasManualFallback
-        });
-
-        setTimeout(() => {
-            if (canSend) {
-                showSuccess(button);
-            } else {
-                showError(button, 'Heymarket API not wired yet. Configure template now; live send will be enabled after endpoint/auth reverse engineering.');
-            }
+        if (!hasSessionConfig) {
+            showError(button, 'Missing Heymarket session config. Open Text settings and add X-Emb-Security-Token, Team ID, and Inbox ID.');
             if (onComplete) onComplete();
-        }, 350);
+            return;
+        }
+
+        const recipient = normalizeHeymarketRecipient(phone);
+        if (!recipient) {
+            showError(button, `Invalid recipient phone: ${phone}`);
+            if (onComplete) onComplete();
+            return;
+        }
+
+        runHeymarketCompliance(message, config)
+            .then(() => sendHeymarketMessage(recipient, message, config))
+            .then((response) => {
+                if (response.status >= 200 && response.status < 300) {
+                    showSuccess(button);
+                } else {
+                    showError(button, `Heymarket send failed (${response.status})`);
+                }
+            })
+            .catch((error) => {
+                const errorMsg = error && error.message ? error.message : 'Unknown Heymarket error';
+                showError(button, errorMsg);
+            })
+            .finally(() => {
+                if (onComplete) onComplete();
+            });
+    }
+
+    function normalizeHeymarketRecipient(phone) {
+        if (!phone) return null;
+        const digits = String(phone).replace(/\D/g, '');
+        if (digits.length === 10) return `1${digits}`;
+        if (digits.length === 11 && digits.startsWith('1')) return digits;
+        return digits.length > 0 ? digits : null;
+    }
+
+    function gmRequestJSON({ method, url, payload, securityToken }) {
+        return new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method,
+                url,
+                anonymous: false,
+                headers: {
+                    'Accept': 'application/json, text/plain, */*',
+                    'Content-Type': 'application/json;charset=UTF-8',
+                    'X-Emb-Security-Token': securityToken,
+                    'Origin': 'https://app.heymarket.com',
+                    'Referer': 'https://app.heymarket.com/chats/'
+                },
+                data: JSON.stringify(payload),
+                onload: (response) => {
+                    if (response.status >= 200 && response.status < 300) {
+                        resolve(response);
+                        return;
+                    }
+                    reject(new Error(`HTTP ${response.status}`));
+                },
+                onerror: (error) => {
+                    reject(new Error(error?.error || 'Network error'));
+                }
+            });
+        });
+    }
+
+    function runHeymarketCompliance(message, config) {
+        return gmRequestJSON({
+            method: 'POST',
+            url: `${HEYMARKET_API_BASE}${HEYMARKET_COMPLIANCE_PATH}`,
+            securityToken: config.securityToken,
+            payload: {
+                q: message,
+                team_id: Number(config.teamId)
+            }
+        });
+    }
+
+    function sendHeymarketMessage(recipient, message, config) {
+        const localId = (window.crypto && window.crypto.randomUUID)
+            ? window.crypto.randomUUID()
+            : `juliet-${Date.now()}-${Math.floor(Math.random() * 1000000)}`;
+
+        return gmRequestJSON({
+            method: 'POST',
+            url: `${HEYMARKET_API_BASE}${HEYMARKET_SEND_PATH}`,
+            securityToken: config.securityToken,
+            payload: {
+                to: recipient,
+                text: message,
+                local_id: localId,
+                conv_title: recipient,
+                inbox: Number(config.inboxId)
+            }
+        });
     }
     
     /**
