@@ -1,11 +1,12 @@
 // ==UserScript==
 // @name         Juliet 
 // @namespace    http://tampermonkey.net/
-// @version      0.3.1
+// @version      0.4.0
 // @description  Streamline lead activity logging in Entrata CRM
 // @author       Samuel Lee
 // @match        https://*.entrata.com/*module=applications*
 // @match        https://ach.entrata.com/*
+// @match        https://app.heymarket.com/*
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_xmlhttpRequest
@@ -27,6 +28,8 @@
     const HEYMARKET_API_BASE = 'https://api-prod-client.heymarket.com';
     const HEYMARKET_COMPLIANCE_PATH = '/v2/message/compliance';
     const HEYMARKET_SEND_PATH = '/v3/message/send';
+    const HEYMARKET_ORIGIN = 'https://app.heymarket.com';
+    const JULIET_BOOTSTRAP_SOURCE = 'juliet-heymarket-bootstrap';
 
     // Tracks whether the Cmd (Meta) key is currently held down
     let cmdHeld = false;
@@ -92,12 +95,34 @@
         localStorage.setItem(TEXT_TEMPLATE_STORAGE_KEY, JSON.stringify(template));
     }
 
+    /**
+     * Normalize raw config to { securityToken, teamId, inboxId }.
+     * Used by getHeymarketConfig and for validating bootstrap payloads.
+     */
+    function normalizeHeymarketConfig(parsed) {
+        return {
+            securityToken: (parsed && parsed.securityToken != null) ? String(parsed.securityToken).trim() : '',
+            teamId: (parsed && parsed.teamId != null) ? String(parsed.teamId).trim() : '',
+            inboxId: (parsed && parsed.inboxId != null) ? String(parsed.inboxId).trim() : ''
+        };
+    }
+
     function getHeymarketConfig() {
         const emptyConfig = {
             securityToken: '',
             teamId: '',
             inboxId: ''
         };
+
+        try {
+            const gmStored = typeof GM_getValue === 'function' ? GM_getValue(HEYMARKET_CONFIG_STORAGE_KEY, null) : null;
+            if (gmStored != null && typeof gmStored === 'string') {
+                const parsed = JSON.parse(gmStored);
+                return normalizeHeymarketConfig(parsed);
+            }
+        } catch (e) {
+            console.warn('[Juliet] Invalid Heymarket config in GM storage, trying localStorage', e);
+        }
 
         const stored = localStorage.getItem(HEYMARKET_CONFIG_STORAGE_KEY);
         if (!stored) {
@@ -106,11 +131,7 @@
 
         try {
             const parsed = JSON.parse(stored);
-            return {
-                securityToken: parsed?.securityToken || '',
-                teamId: parsed?.teamId || '',
-                inboxId: parsed?.inboxId || ''
-            };
+            return normalizeHeymarketConfig(parsed);
         } catch (error) {
             console.warn('[Juliet] Invalid Heymarket config in localStorage, resetting to defaults', error);
             return emptyConfig;
@@ -120,11 +141,15 @@
     function saveHeymarketConfig(config) {
         const current = getHeymarketConfig();
         const merged = {
-            securityToken: config?.securityToken ?? current.securityToken,
-            teamId: config?.teamId ?? current.teamId,
-            inboxId: config?.inboxId ?? current.inboxId
+            securityToken: config?.securityToken !== undefined && config?.securityToken !== null ? String(config.securityToken).trim() : current.securityToken,
+            teamId: config?.teamId !== undefined && config?.teamId !== null ? String(config.teamId).trim() : current.teamId,
+            inboxId: config?.inboxId !== undefined && config?.inboxId !== null ? String(config.inboxId).trim() : current.inboxId
         };
-        localStorage.setItem(HEYMARKET_CONFIG_STORAGE_KEY, JSON.stringify(merged));
+        const json = JSON.stringify(merged);
+        if (typeof GM_setValue === 'function') {
+            GM_setValue(HEYMARKET_CONFIG_STORAGE_KEY, json);
+        }
+        localStorage.setItem(HEYMARKET_CONFIG_STORAGE_KEY, json);
     }
 
     function normalizePhoneNumber(rawPhone) {
@@ -571,6 +596,39 @@
             .juliet-btn-primary:disabled {
                 opacity: 0.5;
                 cursor: not-allowed;
+            }
+
+            .juliet-heymarket-auth-block {
+                margin-bottom: 20px;
+            }
+            .juliet-heymarket-status {
+                font-size: 13px;
+                color: #666;
+                margin-top: 8px;
+            }
+            .juliet-heymarket-status.connected {
+                color: #449d44;
+            }
+            .juliet-advanced-toggle {
+                background: none;
+                border: none;
+                color: #4a90e2;
+                cursor: pointer;
+                font-size: 14px;
+                font-weight: 600;
+                padding: 0 0 8px 0;
+                margin-bottom: 8px;
+                display: block;
+            }
+            .juliet-advanced-toggle:hover {
+                text-decoration: underline;
+            }
+            .juliet-advanced-section {
+                display: none;
+                margin-top: 4px;
+            }
+            .juliet-advanced-section.open {
+                display: block;
             }
 
             /* Cmd-held quick-log mode indicator */
@@ -1631,6 +1689,24 @@
         messageGroup.appendChild(messageTextarea);
         messageGroup.appendChild(validationMsg);
 
+        const authBlock = document.createElement('div');
+        authBlock.className = 'juliet-heymarket-auth-block';
+        const loginBtn = document.createElement('button');
+        loginBtn.type = 'button';
+        loginBtn.className = 'juliet-btn juliet-btn-primary';
+        loginBtn.textContent = 'Login to Heymarket';
+        loginBtn.style.background = 'linear-gradient(to bottom, #f0ad4e 0%, #ec971f 100%)';
+        loginBtn.style.borderColor = '#d58512';
+        const statusLine = document.createElement('div');
+        statusLine.className = 'juliet-heymarket-status';
+        const hasConfig = existingConfig.securityToken && existingConfig.teamId && existingConfig.inboxId;
+        statusLine.textContent = hasConfig
+            ? `Connected (Team ${existingConfig.teamId}, Inbox ${existingConfig.inboxId}). Use Advanced to edit or re-login to refresh.`
+            : 'Not connected. Click "Login to Heymarket" or enter credentials under Advanced.';
+        if (hasConfig) statusLine.classList.add('connected');
+        authBlock.appendChild(loginBtn);
+        authBlock.appendChild(statusLine);
+
         const tokenGroup = document.createElement('div');
         tokenGroup.className = 'juliet-form-group';
         const tokenLabel = document.createElement('label');
@@ -1675,11 +1751,30 @@
         sessionNotice.style.marginTop = '-6px';
         sessionNotice.textContent = 'Saved across sessions: token/team/inbox persist in localStorage on this browser profile.';
 
+        const advancedSection = document.createElement('div');
+        advancedSection.className = 'juliet-form-group';
+        const advancedToggle = document.createElement('button');
+        advancedToggle.type = 'button';
+        advancedToggle.className = 'juliet-advanced-toggle';
+        advancedToggle.textContent = 'Advanced — manual token, Team ID, Inbox ID';
+        const advancedContent = document.createElement('div');
+        advancedContent.className = 'juliet-advanced-section';
+        advancedContent.appendChild(tokenGroup);
+        advancedContent.appendChild(teamGroup);
+        advancedContent.appendChild(inboxGroup);
+        advancedContent.appendChild(sessionNotice);
+        advancedToggle.addEventListener('click', () => {
+            advancedContent.classList.toggle('open');
+            advancedToggle.textContent = advancedContent.classList.contains('open')
+                ? 'Advanced — hide'
+                : 'Advanced — manual token, Team ID, Inbox ID';
+        });
+        advancedSection.appendChild(advancedToggle);
+        advancedSection.appendChild(advancedContent);
+
         body.appendChild(messageGroup);
-        body.appendChild(tokenGroup);
-        body.appendChild(teamGroup);
-        body.appendChild(inboxGroup);
-        body.appendChild(sessionNotice);
+        body.appendChild(authBlock);
+        body.appendChild(advancedSection);
 
         const footer = document.createElement('div');
         footer.className = 'juliet-modal-footer';
@@ -1706,7 +1801,14 @@
         modal.appendChild(footer);
         backdrop.appendChild(modal);
 
+        let bootstrapTimeoutId = null;
+        let bootstrapMessageHandler = null;
+
         const closeModal = () => {
+            if (bootstrapMessageHandler) {
+                window.removeEventListener('message', bootstrapMessageHandler);
+            }
+            if (bootstrapTimeoutId != null) clearTimeout(bootstrapTimeoutId);
             backdrop.remove();
             document.removeEventListener('keydown', escapeHandler);
         };
@@ -1714,6 +1816,49 @@
         const escapeHandler = (e) => {
             if (e.key === 'Escape') closeModal();
         };
+
+        loginBtn.addEventListener('click', () => {
+            const popup = window.open(
+                HEYMARKET_ORIGIN + '/chats/',
+                'heymarketAuth',
+                'width=520,height=640,scrollbars=yes,resizable=yes'
+            );
+            if (!popup) {
+                statusLine.textContent = 'Popup blocked. Please allow popups for this site and try again, or use Advanced to enter credentials.';
+                return;
+            }
+            statusLine.textContent = 'Log in to Heymarket in the popup; credentials will be captured automatically.';
+            statusLine.classList.remove('connected');
+
+            bootstrapMessageHandler = (e) => {
+                if (e.origin !== HEYMARKET_ORIGIN) return;
+                if (!e.data || e.data.source !== JULIET_BOOTSTRAP_SOURCE || !e.data.config) return;
+                const c = e.data.config;
+                const token = (c.securityToken != null) ? String(c.securityToken).trim() : '';
+                const teamId = (c.teamId != null) ? String(c.teamId).trim() : '';
+                const inboxId = (c.inboxId != null) ? String(c.inboxId).trim() : '';
+                if (!token || !teamId || !inboxId) return;
+                if (bootstrapTimeoutId != null) {
+                    clearTimeout(bootstrapTimeoutId);
+                    bootstrapTimeoutId = null;
+                }
+                saveHeymarketConfig({ securityToken: token, teamId, inboxId });
+                tokenInput.value = token;
+                teamInput.value = teamId;
+                inboxInput.value = inboxId;
+                statusLine.textContent = `Connected to Heymarket (Team ${teamId}, Inbox ${inboxId}). You can edit in Advanced before saving.`;
+                statusLine.classList.add('connected');
+                advancedContent.classList.add('open');
+                advancedToggle.textContent = 'Advanced — hide';
+            };
+            window.addEventListener('message', bootstrapMessageHandler);
+
+            bootstrapTimeoutId = setTimeout(() => {
+                bootstrapTimeoutId = null;
+                if (!backdrop.isConnected) return;
+                statusLine.textContent = 'Auto-capture did not complete. You can still enter credentials under Advanced or try "Login to Heymarket" again.';
+            }, 75000);
+        });
 
         cancelBtn.addEventListener('click', closeModal);
         backdrop.addEventListener('click', (e) => {
@@ -1907,7 +2052,7 @@
         const hasSessionConfig = Boolean(config.securityToken && config.teamId && config.inboxId);
 
         if (!hasSessionConfig) {
-            showError(button, 'Missing Heymarket session config. Open Text settings and add X-Emb-Security-Token, Team ID, and Inbox ID.');
+            showError(button, 'Missing Heymarket session. Open Text settings and use "Login to Heymarket" or enter credentials under Advanced.');
             if (onComplete) onComplete();
             return;
         }
@@ -1919,18 +2064,35 @@
             return;
         }
 
+        function isAuthFailure(statusOrError) {
+            const status = typeof statusOrError === 'number' ? statusOrError : (statusOrError && statusOrError.status);
+            return status === 401 || status === 403;
+        }
+        function showAuthRecoverableMessage() {
+            showError(button, 'Heymarket session invalid or expired');
+            alert('Heymarket session appears invalid or expired. Click the Text settings button and use "Login to Heymarket" or update credentials in Advanced.');
+        }
+
         runHeymarketCompliance(message, config)
             .then(() => sendHeymarketMessage(recipient, message, config))
             .then((response) => {
                 if (response.status >= 200 && response.status < 300) {
                     showSuccess(button);
                 } else {
-                    showError(button, `Heymarket send failed (${response.status})`);
+                    if (isAuthFailure(response.status)) {
+                        showAuthRecoverableMessage();
+                    } else {
+                        showError(button, `Heymarket send failed (${response.status})`);
+                    }
                 }
             })
             .catch((error) => {
-                const errorMsg = error && error.message ? error.message : 'Unknown Heymarket error';
-                showError(button, errorMsg);
+                if (isAuthFailure(error)) {
+                    showAuthRecoverableMessage();
+                } else {
+                    const errorMsg = error && error.message ? error.message : 'Unknown Heymarket error';
+                    showError(button, errorMsg);
+                }
             })
             .finally(() => {
                 if (onComplete) onComplete();
@@ -1964,7 +2126,9 @@
                         resolve(response);
                         return;
                     }
-                    reject(new Error(`HTTP ${response.status}`));
+                    const err = new Error(`HTTP ${response.status}`);
+                    err.status = response.status;
+                    reject(err);
                 },
                 onerror: (error) => {
                     reject(new Error(error?.error || 'Network error'));
@@ -2138,11 +2302,91 @@
     }
     
     /**
+     * Run on app.heymarket.com: hook fetch/XHR to capture X-Emb-Security-Token,
+     * teamId, and inboxId from API requests; persist and notify opener (Entrata).
+     */
+    function runHeymarketBootstrap() {
+        const API_BASE = 'api-prod-client.heymarket.com';
+        const captured = { securityToken: '', teamId: '', inboxId: '' };
+
+        function tryPersistAndNotify() {
+            if (!captured.securityToken || !captured.teamId || !captured.inboxId) return;
+            const config = normalizeHeymarketConfig(captured);
+            saveHeymarketConfig(config);
+            console.log('[Juliet] Heymarket config captured and saved');
+            if (window.opener && !window.opener.closed) {
+                try {
+                    window.opener.postMessage(
+                        { source: JULIET_BOOTSTRAP_SOURCE, config },
+                        window.opener.origin
+                    );
+                } catch (e) {
+                    console.warn('[Juliet] Could not postMessage to opener', e);
+                }
+            }
+        }
+
+        function captureFromBody(body) {
+            if (!body || typeof body !== 'string') return;
+            try {
+                const data = JSON.parse(body);
+                if (data.team_id != null) captured.teamId = String(data.team_id);
+                if (data.inbox != null) captured.inboxId = String(data.inbox);
+                tryPersistAndNotify();
+            } catch (_) {}
+        }
+
+        const origFetch = window.fetch;
+        window.fetch = function(input, init) {
+            const req = input instanceof Request ? input : null;
+            const url = typeof input === 'string' ? input : (req ? req.url : (input && input.url)) || '';
+            if (url.indexOf(API_BASE) === -1) return origFetch.apply(this, arguments);
+
+            const headers = (init && init.headers) || (req && req.headers);
+            const token = (headers && (headers.get ? headers.get('X-Emb-Security-Token') : headers['X-Emb-Security-Token'])) || '';
+            if (token) captured.securityToken = token;
+
+            if (init && init.body) captureFromBody(typeof init.body === 'string' ? init.body : null);
+            if (req && req.body) {
+                req.clone().text().then(captureFromBody).catch(() => {});
+            }
+            tryPersistAndNotify();
+            return origFetch.apply(this, arguments);
+        };
+
+        const origOpen = XMLHttpRequest.prototype.open;
+        const origSend = XMLHttpRequest.prototype.send;
+        const origSetHeader = XMLHttpRequest.prototype.setRequestHeader;
+        XMLHttpRequest.prototype.open = function(method, url) {
+            this._julietUrl = url;
+            return origOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
+            if (name === 'X-Emb-Security-Token' && value) captured.securityToken = value;
+            return origSetHeader.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function(body) {
+            if (this._julietUrl && String(this._julietUrl).indexOf(API_BASE) !== -1 && body) {
+                captureFromBody(typeof body === 'string' ? body : null);
+                tryPersistAndNotify();
+            }
+            return origSend.apply(this, arguments);
+        };
+
+        console.log('[Juliet] Heymarket bootstrap active; use the app to capture token/team/inbox.');
+    }
+
+    /**
      * Initialize Juliet when page loads
      */
     async function init() {
         console.log('[Juliet] Initializing...');
-        
+
+        if (window.location.hostname === 'app.heymarket.com') {
+            runHeymarketBootstrap();
+            return;
+        }
+
         // Check if we're on the leads page
         if (!isLeadsPage()) {
             console.log('[Juliet] Not on leads page, skipping initialization');
