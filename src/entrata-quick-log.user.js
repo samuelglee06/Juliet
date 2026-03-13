@@ -1727,7 +1727,7 @@
         const teamInput = document.createElement('input');
         teamInput.className = 'juliet-form-select';
         teamInput.type = 'text';
-        teamInput.placeholder = 'Example: 68917';
+        teamInput.placeholder = 'Enter your Team ID';
         teamInput.value = existingConfig.teamId || '';
         teamGroup.appendChild(teamLabel);
         teamGroup.appendChild(teamInput);
@@ -1740,7 +1740,7 @@
         const inboxInput = document.createElement('input');
         inboxInput.className = 'juliet-form-select';
         inboxInput.type = 'text';
-        inboxInput.placeholder = 'Example: 86613';
+        inboxInput.placeholder = 'Enter your Inbox ID';
         inboxInput.value = existingConfig.inboxId || '';
         inboxGroup.appendChild(inboxLabel);
         inboxGroup.appendChild(inboxInput);
