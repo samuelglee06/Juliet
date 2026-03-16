@@ -1,14 +1,17 @@
 // ==UserScript==
 // @name         Juliet 
 // @namespace    http://tampermonkey.net/
-// @version      0.2.1
+// @version      0.4.0
 // @description  Streamline lead activity logging in Entrata CRM
 // @author       Samuel Lee
 // @match        https://*.entrata.com/*module=applications*
 // @match        https://ach.entrata.com/*
+// @match        https://app.heymarket.com/*
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_xmlhttpRequest
+// @connect      api-prod-client.heymarket.com
+// @connect      app.heymarket.com
 // @run-at       document-end
 // ==/UserScript==
 
@@ -20,7 +23,54 @@
     // ============================================
     
     const STORAGE_KEY = 'juliet_activity_template';
-    
+    const TEXT_TEMPLATE_STORAGE_KEY = 'juliet_text_template';
+    const HEYMARKET_CONFIG_STORAGE_KEY = 'juliet_heymarket_config';
+    const HEYMARKET_API_BASE = 'https://api-prod-client.heymarket.com';
+    const HEYMARKET_COMPLIANCE_PATH = '/v2/message/compliance';
+    const HEYMARKET_SEND_PATH = '/v3/message/send';
+    const HEYMARKET_ORIGIN = 'https://app.heymarket.com';
+    const JULIET_BOOTSTRAP_SOURCE = 'juliet-heymarket-bootstrap';
+
+    // Tracks whether the Cmd (Meta) key is currently held down
+    let cmdHeld = false;
+
+    function toggleCmdVisualState(isHeld) {
+        document.querySelectorAll('.juliet-quick-log-btn').forEach(btn => {
+            btn.classList.toggle('juliet-quick-log-btn--cmd', isHeld);
+        });
+
+        document.querySelectorAll('.juliet-quick-text-btn').forEach(btn => {
+            btn.classList.toggle('juliet-quick-text-btn--cmd', isHeld);
+        });
+    }
+
+    /**
+     * Setup Cmd key listeners to toggle quick action mode visual indicator
+     */
+    function setupCmdKeyListeners() {
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Meta' && !cmdHeld) {
+                cmdHeld = true;
+                toggleCmdVisualState(true);
+            }
+        });
+
+        document.addEventListener('keyup', (e) => {
+            if (e.key === 'Meta') {
+                cmdHeld = false;
+                toggleCmdVisualState(false);
+            }
+        });
+
+        // Safety: clear cmd state if window loses focus mid-hold
+        window.addEventListener('blur', () => {
+            cmdHeld = false;
+            toggleCmdVisualState(false);
+        });
+
+        console.log('[Juliet] Cmd key listeners setup');
+    }
+
     /**
      * Get saved activity template from localStorage
      */
@@ -34,6 +84,116 @@
      */
     function saveTemplate(template) {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(template));
+    }
+
+    function getTextTemplate() {
+        const stored = localStorage.getItem(TEXT_TEMPLATE_STORAGE_KEY);
+        return stored ? JSON.parse(stored) : null;
+    }
+
+    function saveTextTemplate(template) {
+        localStorage.setItem(TEXT_TEMPLATE_STORAGE_KEY, JSON.stringify(template));
+    }
+
+    /**
+     * Normalize raw config to { securityToken, teamId, inboxId }.
+     * Used by getHeymarketConfig and for validating bootstrap payloads.
+     */
+    function normalizeHeymarketConfig(parsed) {
+        return {
+            securityToken: (parsed && parsed.securityToken != null) ? String(parsed.securityToken).trim() : '',
+            teamId: (parsed && parsed.teamId != null) ? String(parsed.teamId).trim() : '',
+            inboxId: (parsed && parsed.inboxId != null) ? String(parsed.inboxId).trim() : ''
+        };
+    }
+
+    function getHeymarketConfig() {
+        const emptyConfig = {
+            securityToken: '',
+            teamId: '',
+            inboxId: ''
+        };
+
+        try {
+            const gmStored = typeof GM_getValue === 'function' ? GM_getValue(HEYMARKET_CONFIG_STORAGE_KEY, null) : null;
+            if (gmStored != null && typeof gmStored === 'string') {
+                const parsed = JSON.parse(gmStored);
+                return normalizeHeymarketConfig(parsed);
+            }
+        } catch (e) {
+            console.warn('[Juliet] Invalid Heymarket config in GM storage, trying localStorage', e);
+        }
+
+        const stored = localStorage.getItem(HEYMARKET_CONFIG_STORAGE_KEY);
+        if (!stored) {
+            return emptyConfig;
+        }
+
+        try {
+            const parsed = JSON.parse(stored);
+            return normalizeHeymarketConfig(parsed);
+        } catch (error) {
+            console.warn('[Juliet] Invalid Heymarket config in localStorage, resetting to defaults', error);
+            return emptyConfig;
+        }
+    }
+
+    function saveHeymarketConfig(config) {
+        const current = getHeymarketConfig();
+        const merged = {
+            securityToken: config?.securityToken !== undefined && config?.securityToken !== null ? String(config.securityToken).trim() : current.securityToken,
+            teamId: config?.teamId !== undefined && config?.teamId !== null ? String(config.teamId).trim() : current.teamId,
+            inboxId: config?.inboxId !== undefined && config?.inboxId !== null ? String(config.inboxId).trim() : current.inboxId
+        };
+        const json = JSON.stringify(merged);
+        if (typeof GM_setValue === 'function') {
+            GM_setValue(HEYMARKET_CONFIG_STORAGE_KEY, json);
+        }
+        localStorage.setItem(HEYMARKET_CONFIG_STORAGE_KEY, json);
+    }
+
+    function normalizePhoneNumber(rawPhone) {
+        if (!rawPhone) return null;
+        const digits = String(rawPhone).replace(/\D/g, '');
+        if (digits.length === 11 && digits.startsWith('1')) {
+            return `+${digits}`;
+        }
+        if (digits.length === 10) {
+            return `+1${digits}`;
+        }
+        return digits.length >= 10 ? `+${digits}` : null;
+    }
+
+    function getLeadPhoneNumber(leadRow) {
+        if (!leadRow) return null;
+        const leadCell = leadRow.querySelector('td:nth-child(2)');
+        if (!leadCell) return null;
+        const text = leadCell.textContent || '';
+        const match = text.match(/(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}/);
+        return normalizePhoneNumber(match ? match[0] : null);
+    }
+
+    function getLeadFirstName(leadName) {
+        if (!leadName) return '';
+        const cleaned = String(leadName).trim();
+        if (!cleaned) return '';
+
+        // Entrata rows often display "Last, First"
+        if (cleaned.includes(',')) {
+            const parts = cleaned.split(',');
+            if (parts[1]) {
+                return parts[1].trim().split(/\s+/)[0] || '';
+            }
+        }
+
+        // Fallback: "First Last"
+        return cleaned.split(/\s+/)[0] || '';
+    }
+
+    function applyLeadTokens(text, leadName) {
+        if (typeof text !== 'string') return text;
+        const firstName = getLeadFirstName(leadName);
+        return text.split('*LEAD_NAME_FIRST*').join(firstName);
     }
     
     // ============================================
@@ -108,15 +268,18 @@
                 border: 2px solid #2e6da4 !important;
                 border-radius: 4px !important;
                 color: white !important;
-                padding: 8px 16px !important;
-                font-size: 13px !important;
+                padding: 0 !important;
+                font-size: 18px !important;
                 font-weight: 700 !important;
                 cursor: pointer !important;
-                white-space: nowrap !important;
                 transition: all 0.2s ease !important;
                 box-shadow: 0 2px 4px rgba(0,0,0,0.2) !important;
-                display: inline-block !important;
-                min-width: 90px !important;
+                display: inline-flex !important;
+                align-items: center !important;
+                justify-content: center !important;
+                width: 34px !important;
+                height: 34px !important;
+                min-width: unset !important;
             }
             
             .juliet-quick-log-btn:hover {
@@ -135,8 +298,8 @@
                 text-align: center;
                 font-weight: bold;
                 white-space: normal !important;
-                min-width: 140px !important;
-                width: 140px !important;
+                min-width: 220px !important;
+                width: 220px !important;
                 background-color: #f5f5f5 !important;
                 padding: 10px !important;
             }
@@ -145,9 +308,65 @@
                 text-align: center;
                 vertical-align: middle;
                 padding: 8px !important;
-                min-width: 140px !important;
-                width: 140px !important;
+                min-width: 220px !important;
+                width: 220px !important;
                 background-color: #fafafa !important;
+            }
+
+            .juliet-row-actions {
+                display: inline-flex !important;
+                align-items: center !important;
+                gap: 8px !important;
+            }
+
+            .juliet-top-config-buttons {
+                display: inline-flex !important;
+                align-items: center !important;
+                gap: 4px !important;
+                margin-left: 6px !important;
+                flex-wrap: nowrap !important;
+                vertical-align: middle !important;
+            }
+
+            .juliet-top-config-buttons .juliet-prefs-btn {
+                margin: 0 !important;
+                padding: 4px 9px !important;
+                height: 24px !important;
+                display: inline-flex !important;
+                align-items: center !important;
+                justify-content: center !important;
+                line-height: 1 !important;
+            }
+
+            .juliet-quick-text-btn {
+                background: linear-gradient(to bottom, #f0ad4e 0%, #ec971f 100%) !important;
+                border: 2px solid #d58512 !important;
+                border-radius: 4px !important;
+                color: white !important;
+                padding: 0 !important;
+                font-size: 18px !important;
+                font-weight: 700 !important;
+                cursor: pointer !important;
+                transition: all 0.2s ease !important;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.2) !important;
+                display: inline-flex !important;
+                align-items: center !important;
+                justify-content: center !important;
+                width: 34px !important;
+                height: 34px !important;
+                min-width: unset !important;
+            }
+
+            .juliet-quick-text-btn:hover {
+                background: linear-gradient(to bottom, #f4ba64 0%, #f0a232 100%);
+                box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+                transform: translateY(-1px);
+            }
+
+            .juliet-quick-text-btn:active {
+                background: linear-gradient(to bottom, #ec971f 0%, #d58512 100%);
+                box-shadow: inset 0 2px 4px rgba(0,0,0,0.2);
+                transform: translateY(0);
             }
             
             /* Preferences Button Styles */
@@ -181,6 +400,15 @@
                 background: linear-gradient(to bottom, #449d44 0%, #398439 100%);
                 box-shadow: inset 0 2px 4px rgba(0,0,0,0.2);
                 transform: translateY(0);
+            }
+
+            .juliet-prefs-btn--text {
+                background: linear-gradient(to bottom, #f0ad4e 0%, #ec971f 100%) !important;
+                border: 2px solid #d58512 !important;
+            }
+
+            .juliet-prefs-btn--text:hover {
+                background: linear-gradient(to bottom, #f4ba64 0%, #f0a232 100%) !important;
             }
             
             /* Modal Styles */
@@ -369,6 +597,50 @@
                 opacity: 0.5;
                 cursor: not-allowed;
             }
+
+            .juliet-heymarket-auth-block {
+                margin-bottom: 20px;
+            }
+            .juliet-heymarket-status {
+                font-size: 13px;
+                color: #666;
+                margin-top: 8px;
+            }
+            .juliet-heymarket-status.connected {
+                color: #449d44;
+            }
+            .juliet-advanced-toggle {
+                background: none;
+                border: none;
+                color: #4a90e2;
+                cursor: pointer;
+                font-size: 14px;
+                font-weight: 600;
+                padding: 0 0 8px 0;
+                margin-bottom: 8px;
+                display: block;
+            }
+            .juliet-advanced-toggle:hover {
+                text-decoration: underline;
+            }
+            .juliet-advanced-section {
+                display: none;
+                margin-top: 4px;
+            }
+            .juliet-advanced-section.open {
+                display: block;
+            }
+
+            /* Cmd-held quick-log mode indicator */
+            .juliet-quick-log-btn--cmd {
+                background: linear-gradient(to bottom, #1d3557 0%, #0d2137 100%) !important;
+                border-color: #0a1a2e !important;
+            }
+
+            .juliet-quick-text-btn--cmd {
+                background: linear-gradient(to bottom, #8a5a0a 0%, #6f4709 100%) !important;
+                border-color: #5a3906 !important;
+            }
         `;
         document.head.appendChild(styleTag);
         console.log('[Juliet] Button and modal styles injected');
@@ -387,102 +659,171 @@
     function createQuickLogButton(leadId, leadName) {
         const button = document.createElement('button');
         button.className = 'juliet-quick-log-btn';
-        button.textContent = 'Quick Log';
+        if (cmdHeld) {
+            button.classList.add('juliet-quick-log-btn--cmd');
+        }
+        button.textContent = '📝';
+        button.title = 'Log activity (Cmd+click to quick log)';
         button.setAttribute('data-lead-id', leadId);
         button.setAttribute('data-lead-name', leadName);
         
         button.addEventListener('click', function(e) {
-            e.preventDefault(); // Prevent default button action
-            e.stopPropagation(); // Prevent event bubbling
-            e.stopImmediatePropagation(); // Stop other handlers on same element
-            
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+
             const leadId = this.getAttribute('data-lead-id');
             const leadName = this.getAttribute('data-lead-name');
-            
-            console.log('[Juliet] Quick Log clicked for:', { leadId, leadName });
-            
-            // Get saved template
+
+            console.log('[Juliet] Log button clicked for:', { leadId, leadName, quickMode: e.metaKey || cmdHeld });
+
             const template = getTemplate();
-            
+
             if (!template) {
                 alert('Please configure your activity template first.\n\nClick the Preferences button to set up your template.');
                 return false;
             }
-            
-            // Find the row to extract customer ID
+
             const row = this.closest('tr.load_lead_details');
             const customerId = getCustomerId(row);
-            
+
             if (!customerId) {
                 alert('Error: Could not find customer ID.\n\nPlease report this issue.');
                 return false;
             }
-            
-            // Call API to log activity
-            logActivity(leadId, customerId, template, this);
-            
-            return false; // Extra safety to prevent any default behavior
+
+            const tokenizedTemplate = {
+                ...template,
+                notes: applyLeadTokens(template.notes || '', leadName)
+            };
+
+            if (e.metaKey || cmdHeld) {
+                // Cmd+click: instant log with saved template
+                logActivity(leadId, customerId, tokenizedTemplate, this);
+            } else {
+                // Normal click: open pre-filled log modal
+                openLogModal(leadId, customerId, tokenizedTemplate, this, leadName);
+            }
+
+            return false;
         });
         
         return button;
     }
-    
-    /**
-     * Inject Preferences button into the table header
-     * Located in the Quick Log column header
-     * This function is called during re-injection scenarios
-     */
-    function injectPreferencesButton() {
-        const table = document.querySelector('#tbl_prospects');
-        
-        if (!table) {
-            console.log('[Juliet] Table not found, cannot inject Preferences button');
-            return;
+
+    function createQuickTextButton(leadId, leadName) {
+        const button = document.createElement('button');
+        button.className = 'juliet-quick-text-btn';
+        if (cmdHeld) {
+            button.classList.add('juliet-quick-text-btn--cmd');
         }
-        
-        // Find the header row
-        const headerRow = table.querySelector('thead tr');
-        if (!headerRow) {
-            console.warn('[Juliet] Table header row not found');
-            return;
-        }
-        
-        // Find the Quick Log header cell (it should be the last th)
-        const quickLogHeader = headerRow.querySelector('.juliet-quick-log-header');
-        if (!quickLogHeader) {
-            console.warn('[Juliet] Quick Log header not found, cannot position Preferences button');
-            return;
-        }
-        
-        // Check if button already exists in this header
-        if (quickLogHeader.querySelector('.juliet-prefs-btn')) {
-            console.log('[Juliet] Preferences button already exists in header');
-            return;
-        }
-        
-        // Create container
-        const container = document.createElement('div');
-        container.style.marginTop = '8px';
-        container.style.display = 'block';
-        container.style.visibility = 'visible';
-        
-        // Create preferences button
-        const prefsBtn = document.createElement('button');
-        prefsBtn.className = 'juliet-prefs-btn';
-        prefsBtn.textContent = '⚙ Preferences';
-        prefsBtn.title = 'Configure activity template';
-        
-        prefsBtn.addEventListener('click', function(e) {
+        button.textContent = '💬';
+        button.title = 'Text lead (Cmd+click to quick send)';
+        button.setAttribute('data-lead-id', leadId);
+        button.setAttribute('data-lead-name', leadName);
+
+        button.addEventListener('click', function(e) {
             e.preventDefault();
             e.stopPropagation();
-            openPreferencesModal();
+            e.stopImmediatePropagation();
+
+            const leadName = this.getAttribute('data-lead-name') || '';
+            const row = this.closest('tr.load_lead_details');
+            const phone = getLeadPhoneNumber(row);
+            if (!phone) {
+                showError(this, 'Could not extract lead phone number');
+                return false;
+            }
+
+            const template = getTextTemplate();
+            if (!template || !template.message || template.message.trim().length === 0) {
+                alert('Please configure your Heymarket message template first.');
+                return false;
+            }
+
+            const tokenizedMessage = applyLeadTokens(template.message.trim(), leadName);
+
+            if (e.metaKey || cmdHeld) {
+                sendHeymarketText({
+                    phone,
+                    message: tokenizedMessage,
+                    button: this
+                });
+            } else {
+                openTextComposeModal(phone, tokenizedMessage, this, leadName);
+            }
+
+            return false;
         });
+
+        return button;
+    }
+    
+    /**
+     * Inject configuration buttons inline with the top Email action control.
+     * Falls back gracefully if Email control cannot be located.
+     */
+    function injectPreferencesButton() {
+        const emailControl = Array.from(document.querySelectorAll('a, button, span')).find((el) => {
+            const label = (el.textContent || '').trim().toLowerCase();
+            return label === 'email';
+        });
+
+        if (!emailControl) {
+            console.warn('[Juliet] Could not find Email control for inline config buttons');
+            return;
+        }
+
+        const emailContainer = emailControl.closest('td, th, li, div') || emailControl.parentElement;
+        if (!emailContainer || !emailContainer.parentElement) {
+            console.warn('[Juliet] Could not find Email container parent for inline config buttons');
+            return;
+        }
+
+        const actionRow = emailContainer.parentElement;
+        let configRow = actionRow.querySelector('.juliet-config-buttons');
+        if (!configRow) {
+            const wrapperTag = emailContainer.tagName && emailContainer.tagName.toLowerCase() === 'li' ? 'li' : 'div';
+            configRow = document.createElement(wrapperTag);
+            configRow.className = 'juliet-config-buttons juliet-top-config-buttons';
+
+            // Keep Entrata's Email split control together (Email + dropdown toggle).
+            const emailDropdownSibling = emailContainer.nextElementSibling;
+            const insertionAnchor = emailDropdownSibling || emailContainer;
+            if (insertionAnchor.nextElementSibling) {
+                actionRow.insertBefore(configRow, insertionAnchor.nextElementSibling);
+            } else {
+                actionRow.appendChild(configRow);
+            }
+        }
+
+        if (!configRow.querySelector('.juliet-text-prefs-btn')) {
+            const textPrefsBtn = document.createElement('button');
+            textPrefsBtn.className = 'juliet-prefs-btn juliet-prefs-btn--text juliet-text-prefs-btn';
+            textPrefsBtn.textContent = '💬 Text';
+            textPrefsBtn.title = 'Configure Heymarket text settings';
+            textPrefsBtn.addEventListener('click', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                openTextPreferencesModal();
+            });
+            configRow.appendChild(textPrefsBtn);
+        }
+
+        if (!configRow.querySelector('.juliet-log-prefs-btn')) {
+            const logPrefsBtn = document.createElement('button');
+            logPrefsBtn.className = 'juliet-prefs-btn juliet-log-prefs-btn';
+            logPrefsBtn.textContent = '⚙ Log';
+            logPrefsBtn.title = 'Configure activity template';
+            logPrefsBtn.addEventListener('click', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                openPreferencesModal();
+            });
+            configRow.appendChild(logPrefsBtn);
+        }
         
-        // Add button to container, then to header
-        container.appendChild(prefsBtn);
-        quickLogHeader.appendChild(container);
-        
-        console.log('[Juliet] Preferences button injected during re-injection');
+        console.log('[Juliet] Inline configuration buttons injected');
     }
     
     /**
@@ -503,9 +844,9 @@
         if (headerRow && !headerRow.querySelector('.juliet-quick-log-header')) {
             const th = document.createElement('th');
             th.className = 'juliet-quick-log-header';
-            th.width = '140px'; // Fixed width to fit button properly
-            th.style.minWidth = '140px'; // Minimum width
-            th.style.width = '140px'; // Explicit width
+            th.width = '220px'; // Fixed width to fit two action buttons
+            th.style.minWidth = '220px'; // Minimum width
+            th.style.width = '220px'; // Explicit width
             th.style.backgroundColor = '#f5f5f5'; // Visual confirmation
             th.style.verticalAlign = 'middle'; // Center content
             th.style.padding = '10px'; // Add padding
@@ -523,30 +864,15 @@
             
             // Add title
             const title = document.createElement('div');
-            title.textContent = 'Quick Log';
+            title.textContent = 'Quick Actions';
             title.style.fontWeight = 'bold';
-            
-            // Add Preferences button directly to the header
-            const prefsBtn = document.createElement('button');
-            prefsBtn.className = 'juliet-prefs-btn';
-            prefsBtn.textContent = '⚙ Preferences';
-            prefsBtn.title = 'Configure activity template';
-            
-            prefsBtn.addEventListener('click', function(e) {
-                e.preventDefault();
-                e.stopPropagation();
-                console.log('[Juliet] Preferences button clicked!');
-                openPreferencesModal();
-            });
-            
             container.appendChild(title);
-            container.appendChild(prefsBtn);
             th.appendChild(container);
             
             headerRow.appendChild(th);
             console.log('[Juliet] Header column added with width:', th.width);
-            console.log('[Juliet] Preferences button added to header:', prefsBtn);
         }
+        injectPreferencesButton();
         
         // Inject buttons into each lead row
         const leadRows = table.querySelectorAll('tr.load_lead_details');
@@ -571,12 +897,17 @@
             // Create button cell
             const td = document.createElement('td');
             td.className = 'juliet-quick-log-cell';
-            td.style.minWidth = '140px';
-            td.style.width = '140px';
+            td.style.minWidth = '220px';
+            td.style.width = '220px';
             td.style.backgroundColor = '#fafafa';
             
-            const button = createQuickLogButton(leadId, leadName);
-            td.appendChild(button);
+            const actionGroup = document.createElement('div');
+            actionGroup.className = 'juliet-row-actions';
+            const logButton = createQuickLogButton(leadId, leadName);
+            const textButton = createQuickTextButton(leadId, leadName);
+            actionGroup.appendChild(textButton);
+            actionGroup.appendChild(logButton);
+            td.appendChild(actionGroup);
             
             row.appendChild(td);
             
@@ -590,7 +921,8 @@
                 console.log('[Juliet] First button cell created:', {
                     tdClass: td.className,
                     tdWidth: td.style.width,
-                    buttonText: button.textContent,
+                    logButtonText: logButton.textContent,
+                    textButtonText: textButton.textContent,
                     parentRow: row
                 });
             }
@@ -600,24 +932,30 @@
         
         // Debug: Count actual buttons in DOM
         const actualButtons = document.querySelectorAll('.juliet-quick-log-btn');
+        const actualTextButtons = document.querySelectorAll('.juliet-quick-text-btn');
         const actualCells = document.querySelectorAll('.juliet-quick-log-cell');
         console.log('[Juliet] DOM verification:', {
             buttonsInDOM: actualButtons.length,
+            textButtonsInDOM: actualTextButtons.length,
             cellsInDOM: actualCells.length,
             sampleButton: actualButtons[0],
+            sampleTextButton: actualTextButtons[0],
             sampleCell: actualCells[0]
         });
         
         // Make function available in console for debugging
         window.julietDebug = function() {
             const buttons = document.querySelectorAll('.juliet-quick-log-btn');
+            const textButtons = document.querySelectorAll('.juliet-quick-text-btn');
             const cells = document.querySelectorAll('.juliet-quick-log-cell');
             const header = document.querySelector('.juliet-quick-log-header');
             console.log('Juliet Debug Info:', {
                 buttons: buttons.length,
+                textButtons: textButtons.length,
                 cells: cells.length,
                 header: header,
                 sampleButton: buttons[0],
+                sampleTextButton: textButtons[0],
                 sampleCell: cells[0],
                 tableWidth: document.querySelector('#tbl_prospects')?.offsetWidth
             });
@@ -646,20 +984,21 @@
         }
         
         const leadRows = table.querySelectorAll('tr.load_lead_details');
-        const existingButtons = table.querySelectorAll('.juliet-quick-log-btn');
+        const existingLogButtons = table.querySelectorAll('.juliet-quick-log-btn');
+        const existingTextButtons = table.querySelectorAll('.juliet-quick-text-btn');
         
-        // Check if button count matches row count
-        if (leadRows.length !== existingButtons.length) {
-            console.log(`[Juliet] Button mismatch detected: ${existingButtons.length} buttons for ${leadRows.length} rows. Re-injecting...`);
+        // Check if button counts match row count
+        if (leadRows.length !== existingLogButtons.length || leadRows.length !== existingTextButtons.length) {
+            console.log(`[Juliet] Button mismatch detected: ${existingLogButtons.length} log / ${existingTextButtons.length} text buttons for ${leadRows.length} rows. Re-injecting...`);
             injectQuickLogButtons();
             injectPreferencesButton(); // Re-inject preferences button too
         }
         
         // Check if preferences button is missing (might be removed during table refresh)
-        const prefsBtn = document.querySelector('.juliet-prefs-btn');
-        const quickLogHeader = table.querySelector('.juliet-quick-log-header');
-        if (quickLogHeader && !prefsBtn) {
-            console.log('[Juliet] Preferences button missing, re-injecting...');
+        const logPrefsBtn = document.querySelector('.juliet-log-prefs-btn');
+        const textPrefsBtn = document.querySelector('.juliet-text-prefs-btn');
+        if (!logPrefsBtn || !textPrefsBtn) {
+            console.log('[Juliet] Inline config buttons missing, re-injecting...');
             injectPreferencesButton();
         }
     }
@@ -797,7 +1136,287 @@
     // ============================================
     // Modal Management
     // ============================================
-    
+
+    /**
+     * Open a pre-filled log modal for a specific lead, allowing the user to
+     * review and edit fields before submitting.
+     * @param {string} leadId
+     * @param {string} customerId
+     * @param {object} template - Pre-filled from saved template
+     * @param {HTMLButtonElement} rowButton - Row button for success/error feedback
+     */
+    function openLogModal(leadId, customerId, template, rowButton, leadName) {
+        console.log('[Juliet] Opening log modal for lead:', leadId);
+
+        const backdrop = document.createElement('div');
+        backdrop.className = 'juliet-modal-backdrop';
+
+        const modal = document.createElement('div');
+        modal.className = 'juliet-modal';
+
+        // Header
+        const header = document.createElement('div');
+        header.className = 'juliet-modal-header';
+        const title = document.createElement('h2');
+        title.className = 'juliet-modal-title';
+        title.textContent = 'Log Activity';
+        header.appendChild(title);
+
+        // Body
+        const body = document.createElement('div');
+        body.className = 'juliet-modal-body';
+
+        // Event Type dropdown
+        const eventTypeGroup = document.createElement('div');
+        eventTypeGroup.className = 'juliet-form-group';
+        const eventTypeLabel = document.createElement('label');
+        eventTypeLabel.className = 'juliet-form-label';
+        eventTypeLabel.textContent = 'Event Type';
+        const eventTypeSelect = document.createElement('select');
+        eventTypeSelect.className = 'juliet-form-select';
+
+        ['Outgoing Call', 'Outgoing Text'].forEach(type => {
+            const opt = document.createElement('option');
+            opt.value = type;
+            opt.textContent = type;
+            if (template.eventType === type) opt.selected = true;
+            eventTypeSelect.appendChild(opt);
+        });
+
+        eventTypeGroup.appendChild(eventTypeLabel);
+        eventTypeGroup.appendChild(eventTypeSelect);
+
+        // Call Outcome radio buttons
+        const outcomeGroup = document.createElement('div');
+        outcomeGroup.className = 'juliet-form-group';
+        const outcomeLabel = document.createElement('label');
+        outcomeLabel.className = 'juliet-form-label';
+        outcomeLabel.textContent = 'Call Outcome';
+        outcomeGroup.appendChild(outcomeLabel);
+
+        const radioGroup = document.createElement('div');
+        radioGroup.className = 'juliet-radio-group';
+
+        const outcomes = ['Connected', 'Left Voicemail', 'No Answer', 'Wrong Number'];
+        outcomes.forEach((outcome, index) => {
+            const optionDiv = document.createElement('div');
+            optionDiv.className = 'juliet-radio-option';
+
+            const radio = document.createElement('input');
+            radio.type = 'radio';
+            radio.name = 'juliet-log-outcome';
+            radio.value = outcome;
+            radio.id = `juliet-log-outcome-${index}`;
+            radio.checked = template.outcome === outcome || (!template.outcome && index === 0);
+
+            const label = document.createElement('label');
+            label.setAttribute('for', `juliet-log-outcome-${index}`);
+            label.textContent = outcome;
+
+            optionDiv.appendChild(radio);
+            optionDiv.appendChild(label);
+            radioGroup.appendChild(optionDiv);
+        });
+
+        outcomeGroup.appendChild(radioGroup);
+
+        // Notes textarea
+        const notesGroup = document.createElement('div');
+        notesGroup.className = 'juliet-form-group';
+        const notesLabel = document.createElement('label');
+        notesLabel.className = 'juliet-form-label';
+        notesLabel.textContent = 'Notes (Required)';
+        const notesTextarea = document.createElement('textarea');
+        notesTextarea.className = 'juliet-form-textarea';
+        notesTextarea.placeholder = 'Enter activity notes...';
+        notesTextarea.value = template.notes || '';
+
+        const validationMsg = document.createElement('div');
+        validationMsg.className = 'juliet-validation-msg';
+        validationMsg.textContent = 'Notes field is required';
+
+        notesGroup.appendChild(notesLabel);
+        notesGroup.appendChild(notesTextarea);
+        notesGroup.appendChild(validationMsg);
+
+        body.appendChild(eventTypeGroup);
+        body.appendChild(outcomeGroup);
+        body.appendChild(notesGroup);
+
+        // Footer
+        const footer = document.createElement('div');
+        footer.className = 'juliet-modal-footer';
+
+        const cancelBtn = document.createElement('button');
+        cancelBtn.className = 'juliet-btn juliet-btn-cancel';
+        cancelBtn.textContent = 'Cancel';
+
+        const submitBtn = document.createElement('button');
+        submitBtn.className = 'juliet-btn juliet-btn-primary';
+        submitBtn.textContent = 'Log Activity';
+
+        const updateSubmitBtn = () => {
+            submitBtn.disabled = notesTextarea.value.trim().length === 0;
+        };
+        updateSubmitBtn();
+        notesTextarea.addEventListener('input', updateSubmitBtn);
+
+        footer.appendChild(cancelBtn);
+        footer.appendChild(submitBtn);
+
+        modal.appendChild(header);
+        modal.appendChild(body);
+        modal.appendChild(footer);
+        backdrop.appendChild(modal);
+
+        const closeModal = () => {
+            backdrop.remove();
+            document.removeEventListener('keydown', escapeHandler);
+        };
+
+        const escapeHandler = (e) => {
+            if (e.key === 'Escape') closeModal();
+        };
+
+        cancelBtn.addEventListener('click', closeModal);
+        backdrop.addEventListener('click', (e) => {
+            if (e.target === backdrop) closeModal();
+        });
+        document.addEventListener('keydown', escapeHandler);
+
+        submitBtn.addEventListener('click', () => {
+            const notes = notesTextarea.value.trim();
+
+            if (notes.length === 0) {
+                validationMsg.classList.add('show');
+                notesTextarea.focus();
+                return;
+            }
+
+            const selectedOutcome = modal.querySelector('input[name="juliet-log-outcome"]:checked');
+            if (!selectedOutcome) {
+                alert('Please select a call outcome');
+                return;
+            }
+
+            const editedTemplate = {
+                eventType: eventTypeSelect.value,
+                outcome: selectedOutcome.value,
+                notes: applyLeadTokens(notes, leadName)
+            };
+
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Logging...';
+
+            logActivity(leadId, customerId, editedTemplate, rowButton, () => {
+                closeModal();
+            });
+        });
+
+        document.body.appendChild(backdrop);
+        notesTextarea.focus();
+        notesTextarea.select();
+    }
+
+    function openTextComposeModal(phone, initialMessage, rowButton, leadName) {
+        const backdrop = document.createElement('div');
+        backdrop.className = 'juliet-modal-backdrop';
+
+        const modal = document.createElement('div');
+        modal.className = 'juliet-modal';
+
+        const header = document.createElement('div');
+        header.className = 'juliet-modal-header';
+        const title = document.createElement('h2');
+        title.className = 'juliet-modal-title';
+        title.textContent = `Compose Text (${phone})`;
+        header.appendChild(title);
+
+        const body = document.createElement('div');
+        body.className = 'juliet-modal-body';
+
+        const messageGroup = document.createElement('div');
+        messageGroup.className = 'juliet-form-group';
+        const messageLabel = document.createElement('label');
+        messageLabel.className = 'juliet-form-label';
+        messageLabel.textContent = 'Message (Required)';
+        const messageTextarea = document.createElement('textarea');
+        messageTextarea.className = 'juliet-form-textarea';
+        messageTextarea.placeholder = 'Type your message...';
+        messageTextarea.value = initialMessage || '';
+        const validationMsg = document.createElement('div');
+        validationMsg.className = 'juliet-validation-msg';
+        validationMsg.textContent = 'Message is required';
+
+        messageGroup.appendChild(messageLabel);
+        messageGroup.appendChild(messageTextarea);
+        messageGroup.appendChild(validationMsg);
+        body.appendChild(messageGroup);
+
+        const footer = document.createElement('div');
+        footer.className = 'juliet-modal-footer';
+
+        const cancelBtn = document.createElement('button');
+        cancelBtn.className = 'juliet-btn juliet-btn-cancel';
+        cancelBtn.textContent = 'Cancel';
+
+        const sendBtn = document.createElement('button');
+        sendBtn.className = 'juliet-btn juliet-btn-primary';
+        sendBtn.textContent = 'Send Text';
+
+        const updateSendBtn = () => {
+            sendBtn.disabled = messageTextarea.value.trim().length === 0;
+        };
+        updateSendBtn();
+        messageTextarea.addEventListener('input', updateSendBtn);
+
+        footer.appendChild(cancelBtn);
+        footer.appendChild(sendBtn);
+
+        modal.appendChild(header);
+        modal.appendChild(body);
+        modal.appendChild(footer);
+        backdrop.appendChild(modal);
+
+        const closeModal = () => {
+            backdrop.remove();
+            document.removeEventListener('keydown', escapeHandler);
+        };
+
+        const escapeHandler = (e) => {
+            if (e.key === 'Escape') closeModal();
+        };
+
+        cancelBtn.addEventListener('click', closeModal);
+        backdrop.addEventListener('click', (e) => {
+            if (e.target === backdrop) closeModal();
+        });
+        document.addEventListener('keydown', escapeHandler);
+
+        sendBtn.addEventListener('click', () => {
+            const message = messageTextarea.value.trim();
+            if (message.length === 0) {
+                validationMsg.classList.add('show');
+                messageTextarea.focus();
+                return;
+            }
+
+            sendBtn.disabled = true;
+            sendBtn.textContent = 'Sending...';
+
+            sendHeymarketText({
+                phone,
+                message: applyLeadTokens(message, leadName),
+                button: rowButton,
+                onComplete: closeModal
+            });
+        });
+
+        document.body.appendChild(backdrop);
+        messageTextarea.focus();
+        messageTextarea.select();
+    }
+
     /**
      * Open preferences modal for template configuration
      */
@@ -902,7 +1521,7 @@
         notesGroup.className = 'juliet-form-group';
         const notesLabel = document.createElement('label');
         notesLabel.className = 'juliet-form-label';
-        notesLabel.textContent = 'Notes (Required)';
+        notesLabel.textContent = 'Notes (Required, supports *LEAD_NAME_FIRST*)';
         const notesTextarea = document.createElement('textarea');
         notesTextarea.className = 'juliet-form-textarea';
         notesTextarea.id = 'juliet-notes';
@@ -1030,6 +1649,254 @@
         // Focus on first input
         eventTypeSelect.focus();
     }
+
+    function openTextPreferencesModal() {
+        console.log('[Juliet] Opening text preferences modal');
+
+        const existingTemplate = getTextTemplate() || { message: '' };
+        const existingConfig = getHeymarketConfig() || {};
+
+        const backdrop = document.createElement('div');
+        backdrop.className = 'juliet-modal-backdrop';
+
+        const modal = document.createElement('div');
+        modal.className = 'juliet-modal';
+
+        const header = document.createElement('div');
+        header.className = 'juliet-modal-header';
+        const title = document.createElement('h2');
+        title.className = 'juliet-modal-title';
+        title.textContent = 'Heymarket Text Configuration';
+        header.appendChild(title);
+
+        const body = document.createElement('div');
+        body.className = 'juliet-modal-body';
+
+        const messageGroup = document.createElement('div');
+        messageGroup.className = 'juliet-form-group';
+        const messageLabel = document.createElement('label');
+        messageLabel.className = 'juliet-form-label';
+        messageLabel.textContent = 'Default Message Template (Required, supports *LEAD_NAME_FIRST*)';
+        const messageTextarea = document.createElement('textarea');
+        messageTextarea.className = 'juliet-form-textarea';
+        messageTextarea.placeholder = 'Hi! Just following up on your inquiry...';
+        messageTextarea.value = existingTemplate.message || '';
+        const validationMsg = document.createElement('div');
+        validationMsg.className = 'juliet-validation-msg';
+        validationMsg.textContent = 'Default message is required';
+
+        messageGroup.appendChild(messageLabel);
+        messageGroup.appendChild(messageTextarea);
+        messageGroup.appendChild(validationMsg);
+
+        const authBlock = document.createElement('div');
+        authBlock.className = 'juliet-heymarket-auth-block';
+        const loginBtn = document.createElement('button');
+        loginBtn.type = 'button';
+        loginBtn.className = 'juliet-btn juliet-btn-primary';
+        loginBtn.textContent = 'Login to Heymarket';
+        loginBtn.style.background = 'linear-gradient(to bottom, #f0ad4e 0%, #ec971f 100%)';
+        loginBtn.style.borderColor = '#d58512';
+        const statusLine = document.createElement('div');
+        statusLine.className = 'juliet-heymarket-status';
+        const hasConfig = existingConfig.securityToken && existingConfig.teamId && existingConfig.inboxId;
+        statusLine.textContent = hasConfig
+            ? `Connected (Team ${existingConfig.teamId}, Inbox ${existingConfig.inboxId}). Use Advanced to edit or re-login to refresh.`
+            : 'Not connected. Click "Login to Heymarket" or enter credentials under Advanced.';
+        if (hasConfig) statusLine.classList.add('connected');
+        authBlock.appendChild(loginBtn);
+        authBlock.appendChild(statusLine);
+
+        const tokenGroup = document.createElement('div');
+        tokenGroup.className = 'juliet-form-group';
+        const tokenLabel = document.createElement('label');
+        tokenLabel.className = 'juliet-form-label';
+        tokenLabel.textContent = 'X-Emb-Security-Token';
+        const tokenInput = document.createElement('textarea');
+        tokenInput.className = 'juliet-form-textarea';
+        tokenInput.placeholder = 'Paste X-Emb-Security-Token from Heymarket request headers...';
+        tokenInput.value = existingConfig.securityToken || '';
+        tokenGroup.appendChild(tokenLabel);
+        tokenGroup.appendChild(tokenInput);
+
+        const teamGroup = document.createElement('div');
+        teamGroup.className = 'juliet-form-group';
+        const teamLabel = document.createElement('label');
+        teamLabel.className = 'juliet-form-label';
+        teamLabel.textContent = 'Team ID';
+        const teamInput = document.createElement('input');
+        teamInput.className = 'juliet-form-select';
+        teamInput.type = 'text';
+        teamInput.placeholder = 'Enter your Team ID';
+        teamInput.value = existingConfig.teamId || '';
+        teamGroup.appendChild(teamLabel);
+        teamGroup.appendChild(teamInput);
+
+        const inboxGroup = document.createElement('div');
+        inboxGroup.className = 'juliet-form-group';
+        const inboxLabel = document.createElement('label');
+        inboxLabel.className = 'juliet-form-label';
+        inboxLabel.textContent = 'Inbox ID';
+        const inboxInput = document.createElement('input');
+        inboxInput.className = 'juliet-form-select';
+        inboxInput.type = 'text';
+        inboxInput.placeholder = 'Enter your Inbox ID';
+        inboxInput.value = existingConfig.inboxId || '';
+        inboxGroup.appendChild(inboxLabel);
+        inboxGroup.appendChild(inboxInput);
+
+        const sessionNotice = document.createElement('div');
+        sessionNotice.style.fontSize = '12px';
+        sessionNotice.style.color = '#666';
+        sessionNotice.style.marginTop = '-6px';
+        sessionNotice.textContent = 'Saved across sessions: token/team/inbox persist in localStorage on this browser profile.';
+
+        const advancedSection = document.createElement('div');
+        advancedSection.className = 'juliet-form-group';
+        const advancedToggle = document.createElement('button');
+        advancedToggle.type = 'button';
+        advancedToggle.className = 'juliet-advanced-toggle';
+        advancedToggle.textContent = 'Advanced — manual token, Team ID, Inbox ID';
+        const advancedContent = document.createElement('div');
+        advancedContent.className = 'juliet-advanced-section';
+        advancedContent.appendChild(tokenGroup);
+        advancedContent.appendChild(teamGroup);
+        advancedContent.appendChild(inboxGroup);
+        advancedContent.appendChild(sessionNotice);
+        advancedToggle.addEventListener('click', () => {
+            advancedContent.classList.toggle('open');
+            advancedToggle.textContent = advancedContent.classList.contains('open')
+                ? 'Advanced — hide'
+                : 'Advanced — manual token, Team ID, Inbox ID';
+        });
+        advancedSection.appendChild(advancedToggle);
+        advancedSection.appendChild(advancedContent);
+
+        body.appendChild(messageGroup);
+        body.appendChild(authBlock);
+        body.appendChild(advancedSection);
+
+        const footer = document.createElement('div');
+        footer.className = 'juliet-modal-footer';
+
+        const cancelBtn = document.createElement('button');
+        cancelBtn.className = 'juliet-btn juliet-btn-cancel';
+        cancelBtn.textContent = 'Cancel';
+
+        const saveBtn = document.createElement('button');
+        saveBtn.className = 'juliet-btn juliet-btn-primary';
+        saveBtn.textContent = 'Save Text Settings';
+
+        const updateSaveBtn = () => {
+            saveBtn.disabled = messageTextarea.value.trim().length === 0;
+        };
+        updateSaveBtn();
+        messageTextarea.addEventListener('input', updateSaveBtn);
+
+        footer.appendChild(cancelBtn);
+        footer.appendChild(saveBtn);
+
+        modal.appendChild(header);
+        modal.appendChild(body);
+        modal.appendChild(footer);
+        backdrop.appendChild(modal);
+
+        let bootstrapTimeoutId = null;
+        let bootstrapMessageHandler = null;
+
+        const closeModal = () => {
+            if (bootstrapMessageHandler) {
+                window.removeEventListener('message', bootstrapMessageHandler);
+            }
+            if (bootstrapTimeoutId != null) clearTimeout(bootstrapTimeoutId);
+            backdrop.remove();
+            document.removeEventListener('keydown', escapeHandler);
+        };
+
+        const escapeHandler = (e) => {
+            if (e.key === 'Escape') closeModal();
+        };
+
+        loginBtn.addEventListener('click', () => {
+            const popup = window.open(
+                HEYMARKET_ORIGIN + '/chats/',
+                'heymarketAuth',
+                'width=520,height=640,scrollbars=yes,resizable=yes'
+            );
+            if (!popup) {
+                statusLine.textContent = 'Popup blocked. Please allow popups for this site and try again, or use Advanced to enter credentials.';
+                return;
+            }
+            statusLine.textContent = 'Log in to Heymarket in the popup; credentials will be captured automatically.';
+            statusLine.classList.remove('connected');
+
+            bootstrapMessageHandler = (e) => {
+                if (e.origin !== HEYMARKET_ORIGIN) return;
+                if (!e.data || e.data.source !== JULIET_BOOTSTRAP_SOURCE || !e.data.config) return;
+                const c = e.data.config;
+                const token = (c.securityToken != null) ? String(c.securityToken).trim() : '';
+                const teamId = (c.teamId != null) ? String(c.teamId).trim() : '';
+                const inboxId = (c.inboxId != null) ? String(c.inboxId).trim() : '';
+                if (!token || !teamId || !inboxId) return;
+                if (bootstrapTimeoutId != null) {
+                    clearTimeout(bootstrapTimeoutId);
+                    bootstrapTimeoutId = null;
+                }
+                saveHeymarketConfig({ securityToken: token, teamId, inboxId });
+                tokenInput.value = token;
+                teamInput.value = teamId;
+                inboxInput.value = inboxId;
+                statusLine.textContent = `Connected to Heymarket (Team ${teamId}, Inbox ${inboxId}). You can edit in Advanced before saving.`;
+                statusLine.classList.add('connected');
+                advancedContent.classList.add('open');
+                advancedToggle.textContent = 'Advanced — hide';
+            };
+            window.addEventListener('message', bootstrapMessageHandler);
+
+            bootstrapTimeoutId = setTimeout(() => {
+                bootstrapTimeoutId = null;
+                if (!backdrop.isConnected) return;
+                statusLine.textContent = 'Auto-capture did not complete. You can still enter credentials under Advanced or try "Login to Heymarket" again.';
+            }, 75000);
+        });
+
+        cancelBtn.addEventListener('click', closeModal);
+        backdrop.addEventListener('click', (e) => {
+            if (e.target === backdrop) closeModal();
+        });
+
+        saveBtn.addEventListener('click', () => {
+            const message = messageTextarea.value.trim();
+            const securityToken = tokenInput.value.trim();
+            const teamId = teamInput.value.trim();
+            const inboxId = inboxInput.value.trim();
+            if (message.length === 0) {
+                validationMsg.classList.add('show');
+                messageTextarea.focus();
+                return;
+            }
+
+            if ((teamId && !/^\d+$/.test(teamId)) || (inboxId && !/^\d+$/.test(inboxId))) {
+                alert('Team ID and Inbox ID must be numeric.');
+                return;
+            }
+
+            saveTextTemplate({ message });
+            saveHeymarketConfig({
+                securityToken,
+                teamId,
+                inboxId
+            });
+
+            saveBtn.textContent = '✓ Saved!';
+            saveBtn.style.background = 'linear-gradient(to bottom, #5cb85c 0%, #449d44 100%)';
+            setTimeout(closeModal, 800);
+        });
+
+        document.addEventListener('keydown', escapeHandler);
+        document.body.appendChild(backdrop);
+        messageTextarea.focus();
+    }
     
     // ============================================
     // API Communication
@@ -1071,9 +1938,10 @@
      * @param {string} leadId - The ID of the lead to log activity for
      * @param {string} customerId - The customer ID (using application ID for now)
      * @param {object} template - The activity template to use
-     * @param {HTMLButtonElement} button - The button element for visual feedback
+     * @param {HTMLButtonElement} button - The row button element for visual feedback
+     * @param {Function} [onSuccess] - Optional callback invoked after success state is shown
      */
-    function logActivity(leadId, customerId, template, button) {
+    function logActivity(leadId, customerId, template, button, onSuccess) {
         console.log('[Juliet] Logging activity for lead:', leadId, 'customer:', customerId);
         
         // Validate required data
@@ -1089,7 +1957,7 @@
         
         // Show loading state
         button.disabled = true;
-        button.textContent = 'Logging...';
+        button.textContent = '⏳';
         button.style.background = 'linear-gradient(to bottom, #f0ad4e 0%, #ec971f 100%)';
         
         // Get outcome ID
@@ -1161,6 +2029,7 @@
                 
                 if (response.status >= 200 && response.status < 300) {
                     showSuccess(button);
+                    if (onSuccess) onSuccess();
                 } else {
                     showError(button, `Error ${response.status}`);
                 }
@@ -1171,13 +2040,140 @@
             }
         });
     }
+
+    function sendHeymarketText({ phone, message, button, onComplete }) {
+        if (!button) return;
+
+        button.disabled = true;
+        button.textContent = '⏳';
+        button.style.background = 'linear-gradient(to bottom, #f0ad4e 0%, #ec971f 100%)';
+
+        const config = getHeymarketConfig() || {};
+        const hasSessionConfig = Boolean(config.securityToken && config.teamId && config.inboxId);
+
+        if (!hasSessionConfig) {
+            showError(button, 'Missing Heymarket session. Open Text settings and use "Login to Heymarket" or enter credentials under Advanced.');
+            if (onComplete) onComplete();
+            return;
+        }
+
+        const recipient = normalizeHeymarketRecipient(phone);
+        if (!recipient) {
+            showError(button, `Invalid recipient phone: ${phone}`);
+            if (onComplete) onComplete();
+            return;
+        }
+
+        function isAuthFailure(statusOrError) {
+            const status = typeof statusOrError === 'number' ? statusOrError : (statusOrError && statusOrError.status);
+            return status === 401 || status === 403;
+        }
+        function showAuthRecoverableMessage() {
+            showError(button, 'Heymarket session invalid or expired');
+            alert('Heymarket session appears invalid or expired. Click the Text settings button and use "Login to Heymarket" or update credentials in Advanced.');
+        }
+
+        runHeymarketCompliance(message, config)
+            .then(() => sendHeymarketMessage(recipient, message, config))
+            .then((response) => {
+                if (response.status >= 200 && response.status < 300) {
+                    showSuccess(button);
+                } else {
+                    if (isAuthFailure(response.status)) {
+                        showAuthRecoverableMessage();
+                    } else {
+                        showError(button, `Heymarket send failed (${response.status})`);
+                    }
+                }
+            })
+            .catch((error) => {
+                if (isAuthFailure(error)) {
+                    showAuthRecoverableMessage();
+                } else {
+                    const errorMsg = error && error.message ? error.message : 'Unknown Heymarket error';
+                    showError(button, errorMsg);
+                }
+            })
+            .finally(() => {
+                if (onComplete) onComplete();
+            });
+    }
+
+    function normalizeHeymarketRecipient(phone) {
+        if (!phone) return null;
+        const digits = String(phone).replace(/\D/g, '');
+        if (digits.length === 10) return `1${digits}`;
+        if (digits.length === 11 && digits.startsWith('1')) return digits;
+        return digits.length > 0 ? digits : null;
+    }
+
+    function gmRequestJSON({ method, url, payload, securityToken }) {
+        return new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method,
+                url,
+                anonymous: false,
+                headers: {
+                    'Accept': 'application/json, text/plain, */*',
+                    'Content-Type': 'application/json;charset=UTF-8',
+                    'X-Emb-Security-Token': securityToken,
+                    'Origin': 'https://app.heymarket.com',
+                    'Referer': 'https://app.heymarket.com/chats/'
+                },
+                data: JSON.stringify(payload),
+                onload: (response) => {
+                    if (response.status >= 200 && response.status < 300) {
+                        resolve(response);
+                        return;
+                    }
+                    const err = new Error(`HTTP ${response.status}`);
+                    err.status = response.status;
+                    reject(err);
+                },
+                onerror: (error) => {
+                    reject(new Error(error?.error || 'Network error'));
+                }
+            });
+        });
+    }
+
+    function runHeymarketCompliance(message, config) {
+        return gmRequestJSON({
+            method: 'POST',
+            url: `${HEYMARKET_API_BASE}${HEYMARKET_COMPLIANCE_PATH}`,
+            securityToken: config.securityToken,
+            payload: {
+                q: message,
+                team_id: Number(config.teamId)
+            }
+        });
+    }
+
+    function sendHeymarketMessage(recipient, message, config) {
+        const localId = (window.crypto && window.crypto.randomUUID)
+            ? window.crypto.randomUUID()
+            : `juliet-${Date.now()}-${Math.floor(Math.random() * 1000000)}`;
+
+        return gmRequestJSON({
+            method: 'POST',
+            url: `${HEYMARKET_API_BASE}${HEYMARKET_SEND_PATH}`,
+            securityToken: config.securityToken,
+            payload: {
+                to: recipient,
+                text: message,
+                local_id: localId,
+                conv_title: recipient,
+                inbox: Number(config.inboxId)
+            }
+        });
+    }
     
     /**
      * Show success state on button
      * Button stays in success state permanently for visual tracking
      */
     function showSuccess(button) {
-        button.textContent = '✓ Logged';
+        button.textContent = '✅';
         button.style.background = 'linear-gradient(to bottom, #5cb85c 0%, #449d44 100%)';
         button.style.borderColor = '#398439';
         button.disabled = true;
@@ -1187,7 +2183,7 @@
      * Show error state on button
      */
     function showError(button, errorInfo) {
-        button.textContent = '✗ Error';
+        button.textContent = '❌';
         button.style.background = 'linear-gradient(to bottom, #d9534f 0%, #c9302c 100%)';
         button.style.borderColor = '#ac2925';
         
@@ -1195,9 +2191,15 @@
         
         // Reset after 3 seconds
         setTimeout(() => {
-            button.textContent = 'Quick Log';
-            button.style.background = 'linear-gradient(to bottom, #4a90e2 0%, #357abd 100%)';
-            button.style.borderColor = '#2e6da4';
+            if (button.classList.contains('juliet-quick-text-btn')) {
+                button.textContent = '💬';
+                button.style.background = 'linear-gradient(to bottom, #f0ad4e 0%, #ec971f 100%)';
+                button.style.borderColor = '#d58512';
+            } else {
+                button.textContent = '📝';
+                button.style.background = 'linear-gradient(to bottom, #4a90e2 0%, #357abd 100%)';
+                button.style.borderColor = '#2e6da4';
+            }
             button.disabled = false;
         }, 3000);
     }
@@ -1212,63 +2214,179 @@
      */
     function createFloatingPreferencesButton() {
         // Check if floating button already exists
-        if (document.getElementById('juliet-floating-prefs')) {
+        if (document.getElementById('juliet-floating-prefs-log')) {
             return;
         }
         
-        const floatingBtn = document.createElement('button');
-        floatingBtn.id = 'juliet-floating-prefs';
-        floatingBtn.textContent = '⚙️ Preferences';
-        floatingBtn.title = 'Configure Quick Log template';
-        
-        // Override all styles to make it highly visible
-        floatingBtn.style.cssText = `
+        const buildFloatingBtn = ({ id, text, title, right, bg, border, onClick }) => {
+            const btn = document.createElement('button');
+            btn.id = id;
+            btn.textContent = text;
+            btn.title = title;
+            btn.style.cssText = `
             position: fixed !important;
             bottom: 30px !important;
-            right: 30px !important;
+            right: ${right}px !important;
             z-index: 99999 !important;
-            background: linear-gradient(to bottom, #5cb85c 0%, #449d44 100%) !important;
-            border: 2px solid #398439 !important;
+            background: ${bg} !important;
+            border: 2px solid ${border} !important;
             border-radius: 6px !important;
             color: white !important;
-            padding: 12px 20px !important;
-            font-size: 14px !important;
+            padding: 0 !important;
+            font-size: 20px !important;
             font-weight: 700 !important;
             cursor: pointer !important;
-            white-space: nowrap !important;
+            width: 44px !important;
+            height: 44px !important;
             box-shadow: 0 4px 12px rgba(0,0,0,0.4) !important;
-            display: block !important;
+            display: inline-flex !important;
+            align-items: center !important;
+            justify-content: center !important;
             visibility: visible !important;
             opacity: 1 !important;
         `;
-        
-        floatingBtn.addEventListener('click', function(e) {
-            e.preventDefault();
-            e.stopPropagation();
-            console.log('[Juliet] Floating Preferences button clicked!');
-            openPreferencesModal();
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onClick();
+            });
+            btn.addEventListener('mouseenter', function() {
+                this.style.transform = 'translateY(-2px)';
+                this.style.boxShadow = '0 6px 16px rgba(0,0,0,0.5)';
+            });
+            btn.addEventListener('mouseleave', function() {
+                this.style.transform = 'translateY(0)';
+                this.style.boxShadow = '0 4px 12px rgba(0,0,0,0.4)';
+            });
+            return btn;
+        };
+
+        const logFloatingBtn = buildFloatingBtn({
+            id: 'juliet-floating-prefs-log',
+            text: '⚙️',
+            title: 'Configure Quick Log template',
+            right: 82,
+            bg: 'linear-gradient(to bottom, #5cb85c 0%, #449d44 100%)',
+            border: '#398439',
+            onClick: () => {
+                console.log('[Juliet] Floating log preferences clicked');
+                openPreferencesModal();
+            }
         });
-        
-        floatingBtn.addEventListener('mouseenter', function() {
-            this.style.transform = 'translateY(-2px)';
-            this.style.boxShadow = '0 6px 16px rgba(0,0,0,0.5)';
+
+        const textFloatingBtn = buildFloatingBtn({
+            id: 'juliet-floating-prefs-text',
+            text: '💬',
+            title: 'Configure Heymarket text settings',
+            right: 30,
+            bg: 'linear-gradient(to bottom, #f0ad4e 0%, #ec971f 100%)',
+            border: '#d58512',
+            onClick: () => {
+                console.log('[Juliet] Floating text preferences clicked');
+                openTextPreferencesModal();
+            }
         });
-        
-        floatingBtn.addEventListener('mouseleave', function() {
-            this.style.transform = 'translateY(0)';
-            this.style.boxShadow = '0 4px 12px rgba(0,0,0,0.4)';
+
+        document.body.appendChild(logFloatingBtn);
+        document.body.appendChild(textFloatingBtn);
+        console.log('[Juliet] Floating Preferences buttons created');
+    }
+
+    function removeFloatingPreferencesButtons() {
+        ['juliet-floating-prefs', 'juliet-floating-prefs-log', 'juliet-floating-prefs-text'].forEach((id) => {
+            const el = document.getElementById(id);
+            if (el) {
+                el.remove();
+            }
         });
-        
-        document.body.appendChild(floatingBtn);
-        console.log('[Juliet] Floating Preferences button created');
     }
     
+    /**
+     * Run on app.heymarket.com: hook fetch/XHR to capture X-Emb-Security-Token,
+     * teamId, and inboxId from API requests; persist and notify opener (Entrata).
+     */
+    function runHeymarketBootstrap() {
+        const API_BASE = 'api-prod-client.heymarket.com';
+        const captured = { securityToken: '', teamId: '', inboxId: '' };
+
+        function tryPersistAndNotify() {
+            if (!captured.securityToken || !captured.teamId || !captured.inboxId) return;
+            const config = normalizeHeymarketConfig(captured);
+            saveHeymarketConfig(config);
+            console.log('[Juliet] Heymarket config captured and saved');
+            if (window.opener && !window.opener.closed) {
+                try {
+                    window.opener.postMessage(
+                        { source: JULIET_BOOTSTRAP_SOURCE, config },
+                        window.opener.origin
+                    );
+                } catch (e) {
+                    console.warn('[Juliet] Could not postMessage to opener', e);
+                }
+            }
+        }
+
+        function captureFromBody(body) {
+            if (!body || typeof body !== 'string') return;
+            try {
+                const data = JSON.parse(body);
+                if (data.team_id != null) captured.teamId = String(data.team_id);
+                if (data.inbox != null) captured.inboxId = String(data.inbox);
+                tryPersistAndNotify();
+            } catch (_) {}
+        }
+
+        const origFetch = window.fetch;
+        window.fetch = function(input, init) {
+            const req = input instanceof Request ? input : null;
+            const url = typeof input === 'string' ? input : (req ? req.url : (input && input.url)) || '';
+            if (url.indexOf(API_BASE) === -1) return origFetch.apply(this, arguments);
+
+            const headers = (init && init.headers) || (req && req.headers);
+            const token = (headers && (headers.get ? headers.get('X-Emb-Security-Token') : headers['X-Emb-Security-Token'])) || '';
+            if (token) captured.securityToken = token;
+
+            if (init && init.body) captureFromBody(typeof init.body === 'string' ? init.body : null);
+            if (req && req.body) {
+                req.clone().text().then(captureFromBody).catch(() => {});
+            }
+            tryPersistAndNotify();
+            return origFetch.apply(this, arguments);
+        };
+
+        const origOpen = XMLHttpRequest.prototype.open;
+        const origSend = XMLHttpRequest.prototype.send;
+        const origSetHeader = XMLHttpRequest.prototype.setRequestHeader;
+        XMLHttpRequest.prototype.open = function(method, url) {
+            this._julietUrl = url;
+            return origOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
+            if (name === 'X-Emb-Security-Token' && value) captured.securityToken = value;
+            return origSetHeader.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function(body) {
+            if (this._julietUrl && String(this._julietUrl).indexOf(API_BASE) !== -1 && body) {
+                captureFromBody(typeof body === 'string' ? body : null);
+                tryPersistAndNotify();
+            }
+            return origSend.apply(this, arguments);
+        };
+
+        console.log('[Juliet] Heymarket bootstrap active; use the app to capture token/team/inbox.');
+    }
+
     /**
      * Initialize Juliet when page loads
      */
     async function init() {
         console.log('[Juliet] Initializing...');
-        
+
+        if (window.location.hostname === 'app.heymarket.com') {
+            runHeymarketBootstrap();
+            return;
+        }
+
         // Check if we're on the leads page
         if (!isLeadsPage()) {
             console.log('[Juliet] Not on leads page, skipping initialization');
@@ -1293,14 +2411,17 @@
             injectQuickLogButtons();
             injectPreferencesButton();
             
-            // Create floating button as backup
-            createFloatingPreferencesButton();
+            // Keep only inline top config controls; remove any legacy floating controls
+            removeFloatingPreferencesButtons();
             
             // Setup observer for dynamic content
             setupMutationObserver();
             
             // Setup event listeners for immediate detection
             setupEventListeners();
+
+            // Setup Cmd key listeners for quick-log mode
+            setupCmdKeyListeners();
             
             // Start polling mechanism as backup
             startPolling();
