@@ -7,11 +7,16 @@
 // @match        https://*.entrata.com/*module=applications*
 // @match        https://ach.entrata.com/*
 // @match        https://app.heymarket.com/*
+// @match        https://app.courtesyconnection.com/*
+// @match        https://*.courtesyconnection.com/*
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_xmlhttpRequest
 // @connect      api-prod-client.heymarket.com
 // @connect      app.heymarket.com
+// @connect      api.courtesyconnection.com
+// @connect      app.courtesyconnection.com
+// @connect      www.courtesyconnection.com
 // @run-at       document-end
 // ==/UserScript==
 
@@ -30,6 +35,11 @@
     const HEYMARKET_SEND_PATH = '/v3/message/send';
     const HEYMARKET_ORIGIN = 'https://app.heymarket.com';
     const JULIET_BOOTSTRAP_SOURCE = 'juliet-heymarket-bootstrap';
+    const JULIET_CC_BOOTSTRAP_SOURCE = 'juliet-courtesy-connection-bootstrap';
+    const COURTESY_CONNECTION_CONFIG_STORAGE_KEY = 'juliet_courtesy_connection_config';
+    const CC_API_DEFAULT_BASE = 'https://www.courtesyconnection.com';
+    const CC_APP_ORIGIN = 'https://www.courtesyconnection.com';
+    const CC_CALL_PATH = '/CallTimeline/UnrecordedOutboundCall';
 
     // Tracks whether the Cmd (Meta) key is currently held down
     let cmdHeld = false;
@@ -150,6 +160,63 @@
             GM_setValue(HEYMARKET_CONFIG_STORAGE_KEY, json);
         }
         localStorage.setItem(HEYMARKET_CONFIG_STORAGE_KEY, json);
+    }
+
+    /**
+     * Normalize raw CC config to { baseUrl, formTemplate }.
+     * formTemplate: object of form field name -> value for UnrecordedOutboundCall POST.
+     */
+    function normalizeCourtesyConnectionConfig(parsed) {
+        let baseUrl = (parsed && parsed.baseUrl != null) ? String(parsed.baseUrl).trim().replace(/\/+$/, '') : CC_API_DEFAULT_BASE;
+        if (baseUrl.includes('api.courtesyconnection.com')) {
+            baseUrl = CC_API_DEFAULT_BASE;
+        }
+        let formTemplate = (parsed && parsed.formTemplate && typeof parsed.formTemplate === 'object') ? parsed.formTemplate : {};
+        if (!formTemplate || typeof formTemplate !== 'object') formTemplate = {};
+        return { baseUrl, formTemplate };
+    }
+
+    function getCourtesyConnectionConfig() {
+        const emptyConfig = {
+            baseUrl: CC_API_DEFAULT_BASE,
+            formTemplate: {}
+        };
+
+        try {
+            const gmStored = typeof GM_getValue === 'function' ? GM_getValue(COURTESY_CONNECTION_CONFIG_STORAGE_KEY, null) : null;
+            if (gmStored != null && typeof gmStored === 'string') {
+                const parsed = JSON.parse(gmStored);
+                return normalizeCourtesyConnectionConfig(parsed);
+            }
+        } catch (e) {
+            console.warn('[Juliet] Invalid Courtesy Connection config in GM storage, trying localStorage', e);
+        }
+
+        const stored = localStorage.getItem(COURTESY_CONNECTION_CONFIG_STORAGE_KEY);
+        if (!stored) {
+            return emptyConfig;
+        }
+
+        try {
+            const parsed = JSON.parse(stored);
+            return normalizeCourtesyConnectionConfig(parsed);
+        } catch (error) {
+            console.warn('[Juliet] Invalid Courtesy Connection config in localStorage, resetting to defaults', error);
+            return emptyConfig;
+        }
+    }
+
+    function saveCourtesyConnectionConfig(config) {
+        const current = getCourtesyConnectionConfig();
+        const merged = {
+            baseUrl: config?.baseUrl !== undefined && config?.baseUrl !== null ? String(config.baseUrl).trim().replace(/\/+$/, '') : current.baseUrl,
+            formTemplate: (config?.formTemplate && typeof config.formTemplate === 'object') ? config.formTemplate : current.formTemplate
+        };
+        const json = JSON.stringify(merged);
+        if (typeof GM_setValue === 'function') {
+            GM_setValue(COURTESY_CONNECTION_CONFIG_STORAGE_KEY, json);
+        }
+        localStorage.setItem(COURTESY_CONNECTION_CONFIG_STORAGE_KEY, json);
     }
 
     function normalizePhoneNumber(rawPhone) {
@@ -298,8 +365,8 @@
                 text-align: center;
                 font-weight: bold;
                 white-space: normal !important;
-                min-width: 220px !important;
-                width: 220px !important;
+                min-width: 280px !important;
+                width: 280px !important;
                 background-color: #f5f5f5 !important;
                 padding: 10px !important;
             }
@@ -308,8 +375,8 @@
                 text-align: center;
                 vertical-align: middle;
                 padding: 8px !important;
-                min-width: 220px !important;
-                width: 220px !important;
+                min-width: 280px !important;
+                width: 280px !important;
                 background-color: #fafafa !important;
             }
 
@@ -641,6 +708,37 @@
                 background: linear-gradient(to bottom, #8a5a0a 0%, #6f4709 100%) !important;
                 border-color: #5a3906 !important;
             }
+
+            .juliet-quick-call-btn {
+                background: linear-gradient(to bottom, #5cb85c 0%, #449d44 100%) !important;
+                border: 2px solid #398439 !important;
+                border-radius: 4px !important;
+                color: white !important;
+                padding: 0 !important;
+                font-size: 18px !important;
+                font-weight: 700 !important;
+                cursor: pointer !important;
+                transition: all 0.2s ease !important;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.2) !important;
+                display: inline-flex !important;
+                align-items: center !important;
+                justify-content: center !important;
+                width: 34px !important;
+                height: 34px !important;
+                min-width: unset !important;
+            }
+
+            .juliet-quick-call-btn:hover {
+                background: linear-gradient(to bottom, #6cc76c 0%, #52ad52 100%);
+                box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+                transform: translateY(-1px);
+            }
+
+            .juliet-quick-call-btn:active {
+                background: linear-gradient(to bottom, #449d44 0%, #398439 100%);
+                box-shadow: inset 0 2px 4px rgba(0,0,0,0.2);
+                transform: translateY(0);
+            }
         `;
         document.head.appendChild(styleTag);
         console.log('[Juliet] Button and modal styles injected');
@@ -758,6 +856,39 @@
 
         return button;
     }
+
+    /**
+     * Create a Quick Call button for a lead row
+     * @param {string} leadId - The application/lead ID
+     * @param {string} leadName - The lead's name
+     * @returns {HTMLButtonElement} The button element
+     */
+    function createQuickCallButton(leadId, leadName) {
+        const button = document.createElement('button');
+        button.className = 'juliet-quick-call-btn';
+        button.textContent = '📞';
+        button.title = 'Call lead';
+        button.setAttribute('data-lead-id', leadId);
+        button.setAttribute('data-lead-name', leadName);
+
+        button.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+
+            const row = this.closest('tr.load_lead_details');
+            const phone = getLeadPhoneNumber(row);
+            if (!phone) {
+                showError(this, 'Could not extract lead phone number');
+                return false;
+            }
+
+            initiateCourtesyConnectionCall({ phone, button: this });
+            return false;
+        });
+
+        return button;
+    }
     
     /**
      * Inject configuration buttons inline with the top Email action control.
@@ -822,6 +953,19 @@
             });
             configRow.appendChild(logPrefsBtn);
         }
+
+        if (!configRow.querySelector('.juliet-call-prefs-btn')) {
+            const callPrefsBtn = document.createElement('button');
+            callPrefsBtn.className = 'juliet-prefs-btn juliet-call-prefs-btn';
+            callPrefsBtn.textContent = '📞 Call';
+            callPrefsBtn.title = 'Configure Courtesy Connection call settings';
+            callPrefsBtn.addEventListener('click', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                openCourtesyConnectionPreferencesModal();
+            });
+            configRow.appendChild(callPrefsBtn);
+        }
         
         console.log('[Juliet] Inline configuration buttons injected');
     }
@@ -844,9 +988,9 @@
         if (headerRow && !headerRow.querySelector('.juliet-quick-log-header')) {
             const th = document.createElement('th');
             th.className = 'juliet-quick-log-header';
-            th.width = '220px'; // Fixed width to fit two action buttons
-            th.style.minWidth = '220px'; // Minimum width
-            th.style.width = '220px'; // Explicit width
+            th.width = '280px'; // Fixed width to fit three action buttons
+            th.style.minWidth = '280px'; // Minimum width
+            th.style.width = '280px'; // Explicit width
             th.style.backgroundColor = '#f5f5f5'; // Visual confirmation
             th.style.verticalAlign = 'middle'; // Center content
             th.style.padding = '10px'; // Add padding
@@ -897,14 +1041,16 @@
             // Create button cell
             const td = document.createElement('td');
             td.className = 'juliet-quick-log-cell';
-            td.style.minWidth = '220px';
-            td.style.width = '220px';
+            td.style.minWidth = '280px';
+            td.style.width = '280px';
             td.style.backgroundColor = '#fafafa';
             
             const actionGroup = document.createElement('div');
             actionGroup.className = 'juliet-row-actions';
-            const logButton = createQuickLogButton(leadId, leadName);
+            const callButton = createQuickCallButton(leadId, leadName);
             const textButton = createQuickTextButton(leadId, leadName);
+            const logButton = createQuickLogButton(leadId, leadName);
+            actionGroup.appendChild(callButton);
             actionGroup.appendChild(textButton);
             actionGroup.appendChild(logButton);
             td.appendChild(actionGroup);
@@ -986,10 +1132,11 @@
         const leadRows = table.querySelectorAll('tr.load_lead_details');
         const existingLogButtons = table.querySelectorAll('.juliet-quick-log-btn');
         const existingTextButtons = table.querySelectorAll('.juliet-quick-text-btn');
+        const existingCallButtons = table.querySelectorAll('.juliet-quick-call-btn');
         
         // Check if button counts match row count
-        if (leadRows.length !== existingLogButtons.length || leadRows.length !== existingTextButtons.length) {
-            console.log(`[Juliet] Button mismatch detected: ${existingLogButtons.length} log / ${existingTextButtons.length} text buttons for ${leadRows.length} rows. Re-injecting...`);
+        if (leadRows.length !== existingLogButtons.length || leadRows.length !== existingTextButtons.length || leadRows.length !== existingCallButtons.length) {
+            console.log(`[Juliet] Button mismatch detected: ${existingCallButtons.length} call / ${existingTextButtons.length} text / ${existingLogButtons.length} log for ${leadRows.length} rows. Re-injecting...`);
             injectQuickLogButtons();
             injectPreferencesButton(); // Re-inject preferences button too
         }
@@ -997,7 +1144,8 @@
         // Check if preferences button is missing (might be removed during table refresh)
         const logPrefsBtn = document.querySelector('.juliet-log-prefs-btn');
         const textPrefsBtn = document.querySelector('.juliet-text-prefs-btn');
-        if (!logPrefsBtn || !textPrefsBtn) {
+        const callPrefsBtn = document.querySelector('.juliet-call-prefs-btn');
+        if (!logPrefsBtn || !textPrefsBtn || !callPrefsBtn) {
             console.log('[Juliet] Inline config buttons missing, re-injecting...');
             injectPreferencesButton();
         }
@@ -1824,7 +1972,7 @@
                 'width=520,height=640,scrollbars=yes,resizable=yes'
             );
             if (!popup) {
-                statusLine.textContent = 'Popup blocked. Please allow popups for this site and try again, or use Advanced to enter credentials.';
+                statusLine.textContent = 'Popup blocked. Please allow popups for this site and try again.';
                 return;
             }
             statusLine.textContent = 'Log in to Heymarket in the popup; credentials will be captured automatically.';
@@ -1896,6 +2044,181 @@
         document.addEventListener('keydown', escapeHandler);
         document.body.appendChild(backdrop);
         messageTextarea.focus();
+    }
+
+    /**
+     * Open Courtesy Connection preferences modal for configuring call API.
+     * Includes Login to Courtesy Connection button and Advanced manual fields.
+     */
+    function openCourtesyConnectionPreferencesModal() {
+        console.log('[Juliet] Opening Courtesy Connection preferences modal');
+
+        const existingConfig = getCourtesyConnectionConfig();
+
+        const backdrop = document.createElement('div');
+        backdrop.className = 'juliet-modal-backdrop';
+
+        const modal = document.createElement('div');
+        modal.className = 'juliet-modal';
+
+        const header = document.createElement('div');
+        header.className = 'juliet-modal-header';
+        const title = document.createElement('h2');
+        title.className = 'juliet-modal-title';
+        title.textContent = 'Courtesy Connection Call Configuration';
+        header.appendChild(title);
+
+        const body = document.createElement('div');
+        body.className = 'juliet-modal-body';
+
+        const authBlock = document.createElement('div');
+        authBlock.className = 'juliet-heymarket-auth-block';
+        const loginBtn = document.createElement('button');
+        loginBtn.type = 'button';
+        loginBtn.className = 'juliet-btn juliet-btn-primary';
+        loginBtn.textContent = 'Login to Courtesy Connection';
+        loginBtn.style.background = 'linear-gradient(to bottom, #5cb85c 0%, #449d44 100%)';
+        loginBtn.style.borderColor = '#398439';
+        const statusLine = document.createElement('div');
+        statusLine.className = 'juliet-heymarket-status';
+        const ft = existingConfig.formTemplate || {};
+        const requiredKeys = ['PropertyPickerVM.PropertyID', 'PropertyPickerVM.CustomerID', 'MyPhoneNumbersPickerVM.OperatorPhoneNumberID'];
+        const hasConfig = Boolean(existingConfig.baseUrl && requiredKeys.every(k => ft[k]));
+        const fieldCount = Object.keys(ft).length;
+        statusLine.textContent = hasConfig
+            ? `Form template captured (${fieldCount} fields). Base URL: ${existingConfig.baseUrl}. Use Advanced to edit.`
+            : 'Not configured. Click "Login to Courtesy Connection" to load the CC call page and capture the form.';
+        if (hasConfig) statusLine.classList.add('connected');
+        authBlock.appendChild(loginBtn);
+        authBlock.appendChild(statusLine);
+
+        const baseUrlGroup = document.createElement('div');
+        baseUrlGroup.className = 'juliet-form-group';
+        const baseUrlLabel = document.createElement('label');
+        baseUrlLabel.className = 'juliet-form-label';
+        baseUrlLabel.textContent = 'API Base URL';
+        const baseUrlInput = document.createElement('input');
+        baseUrlInput.className = 'juliet-form-select';
+        baseUrlInput.type = 'text';
+        baseUrlInput.placeholder = 'https://www.courtesyconnection.com';
+        baseUrlInput.value = existingConfig.baseUrl || CC_API_DEFAULT_BASE;
+        baseUrlGroup.appendChild(baseUrlLabel);
+        baseUrlGroup.appendChild(baseUrlInput);
+
+        const advancedSection = document.createElement('div');
+        advancedSection.className = 'juliet-form-group';
+        const advancedToggle = document.createElement('button');
+        advancedToggle.type = 'button';
+        advancedToggle.className = 'juliet-advanced-toggle';
+        advancedToggle.textContent = 'Advanced — Base URL';
+        const advancedContent = document.createElement('div');
+        advancedContent.className = 'juliet-advanced-section';
+        advancedContent.appendChild(baseUrlGroup);
+        advancedToggle.addEventListener('click', () => {
+            advancedContent.classList.toggle('open');
+            advancedToggle.textContent = advancedContent.classList.contains('open')
+                ? 'Advanced — hide'
+                : 'Advanced — Base URL';
+        });
+        advancedSection.appendChild(advancedToggle);
+        advancedSection.appendChild(advancedContent);
+
+        body.appendChild(authBlock);
+        body.appendChild(advancedSection);
+
+        const footer = document.createElement('div');
+        footer.className = 'juliet-modal-footer';
+
+        const cancelBtn = document.createElement('button');
+        cancelBtn.className = 'juliet-btn juliet-btn-cancel';
+        cancelBtn.textContent = 'Cancel';
+
+        const saveBtn = document.createElement('button');
+        saveBtn.className = 'juliet-btn juliet-btn-primary';
+        saveBtn.textContent = 'Save Call Settings';
+
+        footer.appendChild(cancelBtn);
+        footer.appendChild(saveBtn);
+
+        modal.appendChild(header);
+        modal.appendChild(body);
+        modal.appendChild(footer);
+        backdrop.appendChild(modal);
+
+        let bootstrapTimeoutId = null;
+        let bootstrapMessageHandler = null;
+
+        const closeModal = () => {
+            if (bootstrapMessageHandler) {
+                window.removeEventListener('message', bootstrapMessageHandler);
+            }
+            if (bootstrapTimeoutId != null) clearTimeout(bootstrapTimeoutId);
+            backdrop.remove();
+            document.removeEventListener('keydown', escapeHandler);
+        };
+
+        const escapeHandler = (e) => {
+            if (e.key === 'Escape') closeModal();
+        };
+
+        loginBtn.addEventListener('click', () => {
+            const popup = window.open(
+                (typeof CC_APP_ORIGIN !== 'undefined' ? CC_APP_ORIGIN : 'https://www.courtesyconnection.com') + '/',
+                'courtesyConnectionAuth',
+                'width=520,height=640,scrollbars=yes,resizable=yes'
+            );
+            if (!popup) {
+                statusLine.textContent = 'Popup blocked. Please allow popups for this site and try again.';
+                return;
+            }
+            statusLine.textContent = 'Log in at Courtesy Connection, then navigate to Calls > Dial Outbound Call to capture the form.';
+            statusLine.classList.remove('connected');
+
+            bootstrapMessageHandler = (e) => {
+                if (e.origin !== CC_APP_ORIGIN) return;
+                if (!e.data || e.data.source !== JULIET_CC_BOOTSTRAP_SOURCE || !e.data.config) return;
+                const c = e.data.config;
+                const baseUrl = (c.baseUrl != null) ? String(c.baseUrl).trim().replace(/\/+$/, '') : '';
+                const formTemplate = (c.formTemplate && typeof c.formTemplate === 'object') ? c.formTemplate : {};
+                if (!formTemplate || Object.keys(formTemplate).length === 0) return;
+                if (bootstrapTimeoutId != null) {
+                    clearTimeout(bootstrapTimeoutId);
+                    bootstrapTimeoutId = null;
+                }
+                saveCourtesyConnectionConfig({ baseUrl: baseUrl || CC_API_DEFAULT_BASE, formTemplate });
+                baseUrlInput.value = baseUrl || CC_API_DEFAULT_BASE;
+                statusLine.textContent = `Form template captured (${Object.keys(formTemplate).length} fields). Base URL: ${baseUrl || CC_API_DEFAULT_BASE}. You can edit in Advanced before saving.`;
+                statusLine.classList.add('connected');
+                advancedContent.classList.add('open');
+                advancedToggle.textContent = 'Advanced — hide';
+            };
+            window.addEventListener('message', bootstrapMessageHandler);
+
+            bootstrapTimeoutId = setTimeout(() => {
+                bootstrapTimeoutId = null;
+                if (!backdrop.isConnected) return;
+                statusLine.textContent = 'Auto-capture did not complete. You can still enter credentials under Advanced or try "Login to Courtesy Connection" again.';
+            }, 75000);
+        });
+
+        cancelBtn.addEventListener('click', closeModal);
+        backdrop.addEventListener('click', (e) => {
+            if (e.target === backdrop) closeModal();
+        });
+
+        saveBtn.addEventListener('click', () => {
+            const baseUrl = baseUrlInput.value.trim().replace(/\/+$/, '') || CC_API_DEFAULT_BASE;
+
+            saveCourtesyConnectionConfig({ baseUrl });
+
+            saveBtn.textContent = '✓ Saved!';
+            saveBtn.style.background = 'linear-gradient(to bottom, #5cb85c 0%, #449d44 100%)';
+            setTimeout(closeModal, 800);
+        });
+
+        document.addEventListener('keydown', escapeHandler);
+        document.body.appendChild(backdrop);
+        (advancedContent.querySelector('input') || baseUrlInput).focus();
     }
     
     // ============================================
@@ -2167,7 +2490,95 @@
             }
         });
     }
-    
+
+    /**
+     * Initiate outbound call via Courtesy Connection API.
+     * Config-driven: baseUrl, formTemplate from getCourtesyConnectionConfig.
+     * API path/body/auth header may need adjustment after reverse-engineering.
+     */
+    function initiateCourtesyConnectionCall({ phone, button }) {
+        if (!button) return;
+
+        button.disabled = true;
+        button.textContent = '⏳';
+        button.style.background = 'linear-gradient(to bottom, #f0ad4e 0%, #ec971f 100%)';
+
+        const config = getCourtesyConnectionConfig();
+        const ft = config.formTemplate || {};
+        const requiredKeys = ['PropertyPickerVM.PropertyID', 'PropertyPickerVM.CustomerID', 'MyPhoneNumbersPickerVM.OperatorPhoneNumberID'];
+        const hasFormTemplate = requiredKeys.every(k => ft[k]);
+        const hasConfig = config.baseUrl && hasFormTemplate;
+
+        if (!hasConfig) {
+            showError(button, 'Missing Courtesy Connection config. Visit CC Call Settings, click "Login to Courtesy Connection", and load the UnrecordedOutboundCall page to capture the form.');
+            return;
+        }
+
+        const phoneDigits = String(phone).replace(/\D/g, '');
+        const phone10 = phoneDigits.length === 11 && phoneDigits.startsWith('1') ? phoneDigits.slice(1) : (phoneDigits.length === 10 ? phoneDigits : null);
+        if (!phone10 || phone10.length !== 10) {
+            showError(button, `Invalid phone number: ${phone}`);
+            return;
+        }
+
+        const baseUrl = config.baseUrl.replace(/\/+$/, '');
+        const getUrl = baseUrl + CC_CALL_PATH;
+
+        GM_xmlhttpRequest({
+            method: 'GET',
+            url: getUrl,
+            anonymous: false,
+            onload: (getResp) => {
+                if (getResp.status < 200 || getResp.status >= 300) {
+                    const errMsg = getResp.status === 404
+                        ? 'Could not load CC form (404). Base URL may be wrong - use https://www.courtesyconnection.com. Check CC Call Settings > Advanced.'
+                        : `Could not load CC form (${getResp.status}). Ensure you are logged into Courtesy Connection.`;
+                    showError(button, errMsg);
+                    return;
+                }
+                const tokenMatch = getResp.responseText.match(/name="__RequestVerificationToken"[^>]*value="([^"]*)"/) ||
+                    getResp.responseText.match(/name="__RequestVerificationToken" value="([^"]*)"/);
+                const token = tokenMatch ? tokenMatch[1] : null;
+                if (!token) {
+                    showError(button, 'Could not obtain CSRF token. Ensure you are logged into Courtesy Connection.');
+                    return;
+                }
+
+                const boundary = '----WebKitFormBoundary' + Math.random().toString(36).slice(2, 14);
+                const fields = { ...ft, '__RequestVerificationToken': token, 'PhoneNumberToCall': phone10, 'NullableResidentContactID': '' };
+                const body = Object.entries(fields).map(([name, value]) =>
+                    `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value !== undefined && value !== null ? String(value) : ''}\r\n`
+                ).join('') + `--${boundary}--\r\n`;
+
+                GM_xmlhttpRequest({
+                    method: 'POST',
+                    url: getUrl,
+                    anonymous: false,
+                    headers: {
+                        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+                        'Accept': 'text/html,application/xhtml+xml',
+                        'Origin': baseUrl,
+                        'Referer': getUrl
+                    },
+                    data: body,
+                    onload: (postResp) => {
+                        if (postResp.status >= 200 && postResp.status < 300) {
+                            showSuccess(button);
+                        } else {
+                            showError(button, `Call failed (${postResp.status})`);
+                        }
+                    },
+                    onerror: (err) => {
+                        showError(button, err?.error || 'Network error');
+                    }
+                });
+            },
+            onerror: (err) => {
+                showError(button, err?.error || 'Could not reach Courtesy Connection. Ensure you are logged in.');
+            }
+        });
+    }
+
     /**
      * Show success state on button
      * Button stays in success state permanently for visual tracking
@@ -2195,6 +2606,10 @@
                 button.textContent = '💬';
                 button.style.background = 'linear-gradient(to bottom, #f0ad4e 0%, #ec971f 100%)';
                 button.style.borderColor = '#d58512';
+            } else if (button.classList.contains('juliet-quick-call-btn')) {
+                button.textContent = '📞';
+                button.style.background = 'linear-gradient(to bottom, #5cb85c 0%, #449d44 100%)';
+                button.style.borderColor = '#398439';
             } else {
                 button.textContent = '📝';
                 button.style.background = 'linear-gradient(to bottom, #4a90e2 0%, #357abd 100%)';
@@ -2377,6 +2792,81 @@
     }
 
     /**
+     * Run on courtesyconnection.com: when on UnrecordedOutboundCall page, scrape the form
+     * to capture formTemplate for call initiation. Persists and notifies opener (Entrata).
+     */
+    function runCourtesyConnectionBootstrap() {
+        const EXCLUDED_FIELDS = ['__RequestVerificationToken', 'PhoneNumberToCall'];
+
+        function scrapeFormTemplate() {
+            const formTemplate = {};
+            const inputs = document.querySelectorAll('form input[name], form select[name]');
+            for (const el of inputs) {
+                const name = el.getAttribute('name');
+                if (!name || EXCLUDED_FIELDS.includes(name)) continue;
+                let value = '';
+                if (el.tagName === 'SELECT') {
+                    const opt = el.options[el.selectedIndex];
+                    value = opt ? opt.value : '';
+                } else {
+                    const type = (el.getAttribute('type') || '').toLowerCase();
+                    if (type === 'checkbox' || type === 'radio') {
+                        value = el.checked ? (el.value || 'true') : '';
+                        if (type === 'radio' && !el.checked) continue;
+                    } else {
+                        value = el.value || '';
+                    }
+                }
+                formTemplate[name] = value;
+            }
+            return formTemplate;
+        }
+
+        function tryPersistAndNotify(formTemplate) {
+            const requiredKeys = ['PropertyPickerVM.PropertyID', 'PropertyPickerVM.CustomerID', 'MyPhoneNumbersPickerVM.OperatorPhoneNumberID'];
+            const hasRequired = requiredKeys.every(k => formTemplate[k]);
+            if (!hasRequired) return false;
+            const baseUrl = `${window.location.protocol}//${window.location.host}`;
+            const config = { baseUrl, formTemplate };
+            saveCourtesyConnectionConfig(config);
+            console.log('[Juliet] Courtesy Connection form template captured and saved');
+            if (window.opener && !window.opener.closed) {
+                try {
+                    window.opener.postMessage({ source: JULIET_CC_BOOTSTRAP_SOURCE, config }, window.opener.origin);
+                } catch (e) {
+                    console.warn('[Juliet] Could not postMessage to opener', e);
+                }
+            }
+            return true;
+        }
+
+        function runScraper() {
+            const formTemplate = scrapeFormTemplate();
+            const count = Object.keys(formTemplate).length;
+            if (count === 0) {
+                console.log('[Juliet] CC bootstrap: no form fields found on UnrecordedOutboundCall page');
+                return;
+            }
+            if (tryPersistAndNotify(formTemplate)) {
+                console.log('[Juliet] CC bootstrap: form template captured (' + count + ' fields)');
+            } else {
+                console.log('[Juliet] CC bootstrap: form scraped but missing required fields (PropertyID, CustomerID, OperatorPhoneNumberID)');
+            }
+        }
+
+        if (!window.location.pathname.includes('UnrecordedOutboundCall')) {
+            console.log('[Juliet] CC bootstrap active; navigate to UnrecordedOutboundCall to capture form.');
+            return;
+        }
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', () => setTimeout(runScraper, 800));
+        } else {
+            setTimeout(runScraper, 800);
+        }
+    }
+
+    /**
      * Initialize Juliet when page loads
      */
     async function init() {
@@ -2384,6 +2874,11 @@
 
         if (window.location.hostname === 'app.heymarket.com') {
             runHeymarketBootstrap();
+            return;
+        }
+
+        if (window.location.hostname.endsWith('courtesyconnection.com')) {
+            runCourtesyConnectionBootstrap();
             return;
         }
 
