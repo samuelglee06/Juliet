@@ -1,8 +1,10 @@
-# Juliet: Entrata Workflow Optimization
+# Juliet: Entrata Leads Hub
 
-> Reducing lead logging time from 30 seconds to 1 second — because leasing consultants shouldn't spend their day clicking through menus.
+> Log activities, send texts, and place calls from the Entrata Leads page — without the menu maze or constant tab-hopping.
 
-**Impact**: 96% reduction in logging time | 10 clicks → 1 click
+**Logging impact** (after setup): ~96% less time vs. the native activity flow | 10+ clicks → 1 click (or Cmd+click for instant log)
+
+Text and call efficiency targets are defined in the [PRD](docs/PRD.md) (KPI 2–3).
 
 ![Juliet Mockup](docs/assets/mockup.png)
 
@@ -10,9 +12,9 @@
 
 ## The Problem I Noticed
 
-As a leasing consultant using Entrata CRM, I found myself repeatedly frustrated by what should have been a simple task: logging that I'd called a lead.
+As a leasing consultant using Entrata CRM, simple outbound work was buried under navigation and fragmented tools.
 
-Every single time, the same tedious workflow:
+**Logging a call** meant leaving the Leads view every time:
 1. Navigate to the lead's profile (3 clicks)
 2. Find the "Activities" tab (2 clicks)
 3. Click "Add Activity" (1 click)
@@ -21,157 +23,137 @@ Every single time, the same tedious workflow:
 6. Submit (1 click)
 7. Navigate back to the leads page (2 clicks)
 
-**Total: 10+ clicks and ~30 seconds of non-productive time.**
+**Total: 10+ clicks and ~30 seconds** of non-productive time per log.
 
-When you're managing 50+ leads per day, this "friction tax" adds up to **25 minutes of pure administrative overhead** — time that could be spent actually talking to prospects.
+**Texting** (Heymarket) and **calling** (Courtesy Connection) meant additional context switches — new tabs, copy-paste phone numbers, and broken rhythm on the Leads page.
+
+When you're managing 50+ leads per day, that friction adds up to a large **administrative tax** — time better spent talking to prospects.
 
 ## The Root Cause
 
-The inefficiency stems from three core UX problems:
+1. **Navigation fatigue**: The CRM pushes you off the Leads page for core actions.
+2. **Fragmented tooling**: Log, text, and call live in different products and flows.
+3. **Repetitive setup**: The same templates and outcomes get re-entered over and over.
 
-1. **Navigation Fatigue**: The CRM forces users to leave the Leads page to log activities
-2. **Context Switching**: Bouncing between pages creates cognitive load and breaks workflow
-3. **Repetitive Data Entry**: Most call attempts follow the same pattern, yet every field must be manually filled
-
-This isn't a training issue or a user error — it's a fundamental workflow design flaw.
+This is a workflow design problem, not a training problem.
 
 ## The Solution
 
-Juliet redesigns the logging workflow around **two key insights**:
+Juliet turns the Leads table into a **single interaction surface**:
 
-### 1. Configuration Should Happen Once
-Most leasing consultants make similar types of calls in batches. If I'm making 20 outbound calls and leaving voicemails, why configure the same activity template 20 times?
+### 1. Configure once
+- **Log** (blue preferences): event type, outcome, notes template — saved for reuse.
+- **Text** (yellow preferences): default message + Heymarket connection — use **Login to Heymarket** for auto-captured credentials, or **Advanced** for manual token / team / inbox (see [PRD](docs/PRD.md) FR-6).
+- **Call**: Courtesy Connection credentials configured once in-script.
 
-**Juliet's approach:** Configure your activity template once via a Preferences modal, then reuse it across all leads.
+### 2. Act from each row
+Each lead row gets three color-coded actions: **call** (green), **text** (yellow), **log** (blue).
 
-### 2. Execution Should Be One-Click
-Once configured, logging an activity should be as simple as clicking a button next to the lead's name.
-
-**Juliet's approach:** Inject "Quick Log" buttons directly into the Leads table. One click = activity logged.
+- **Log & text — dual mode**: Normal click opens a pre-filled modal to review and submit. **Hold Cmd (⌘) and click** to send immediately using the saved template (button styling shows quick mode).
+- **Call**: One click initiates the outbound call via Courtesy Connection — no modal.
 
 ![Workflow Comparison](docs/assets/entrata-screenshot.png)
 
 ## How It Works
 
-### Phase 1: One-Time Setup
-```
-User clicks Preferences → Configures template → Saves
-```
-- Select event type (e.g., "Outgoing Call")
-- Choose call outcome (Connected, Left Voicemail, No Answer, Wrong Number)
-- Add notes (required by Entrata API)
-- Configuration persists across sessions via localStorage
+### Setup (once per machine / session needs)
+- Save log and text templates; complete Heymarket bootstrap or Advanced fields; save Courtesy Connection settings as implemented in the userscript.
+- Preferences persist via **localStorage** (and Tampermonkey **GM_** storage where used for cross-tab bootstrap data).
 
-### Phase 2: Rapid Execution
-```
-User clicks Quick Log → Activity logged → Button updates
-```
-- Single click per lead
-- Asynchronous API call (no page reload)
-- Immediate visual feedback
-- No navigation away from Leads page
+### Execution (every lead)
+- **Log / text**: modal path or **Cmd+click** instant path.
+- **Call**: direct API trigger from the row.
+- Requests are **asynchronous** — no full-page reload; buttons show success or error state.
 
 ## Technical Approach
 
-**Platform:** Browser-side JavaScript injection via [Tampermonkey](https://www.tampermonkey.net/)
+**Platform:** [Tampermonkey](https://www.tampermonkey.net/) userscript — [src/entrata-quick-log.user.js](src/entrata-quick-log.user.js) (v0.4.0).
 
-**Why Tampermonkey?**
-- No backend required — runs entirely in the browser
-- Works with existing Entrata installation
-- Easy to install and update
-- Zero impact on CRM performance
+**Why Tampermonkey + privileged APIs?**
+- No dedicated backend — logic runs in the browser.
+- **`GM_xmlhttpRequest`** and **`@connect`** allowlists reach **Entrata**, **Heymarket**, and **Courtesy Connection** APIs from the extension context (ordinary page fetch would be blocked by CORS).
+- **`@match`** includes Entrata, Heymarket, and Courtesy Connection origins so bootstrap / capture flows can run where those apps load.
 
-**Key Technical Challenges:**
-1. **API Reverse Engineering**: Capturing Entrata's activity logging endpoints and payload structure
-2. **DOM Manipulation**: Injecting UI elements into a third-party application without breaking existing functionality
-3. **State Management**: Persisting user preferences across sessions using localStorage
-4. **Error Handling**: Gracefully managing API failures and providing clear user feedback
+**Challenges addressed:**
+1. **API reverse engineering** — Entrata activity payloads, Heymarket compliance + send, Courtesy Connection call endpoint.
+2. **DOM injection** — Per-row controls without breaking Entrata layout.
+3. **State** — Templates and credentials in localStorage / GM storage; Cmd-key listeners for quick-mode UI.
+4. **Errors** — Failed requests surface on the button without breaking the table.
 
 ## Impact & Metrics
 
-### Before Juliet
-- **Time per lead**: ~30 seconds
-- **Clicks required**: 10+
-- **Daily overhead** (50 leads): ~25 minutes
-- **User experience**: Frustrating, repetitive
+### Activity logging (measured narrative — native Entrata flow vs. Juliet after setup)
 
-### After Juliet
-- **Time per lead**: ~1 second (after initial setup)
-- **Clicks required**: 1
-- **Daily overhead** (50 leads): ~4 minutes
-- **User experience**: Seamless, efficient
+| | Before | After (Juliet) |
+|--|--------|----------------|
+| Time per log | ~30 s | ~1 s |
+| Clicks | 10+ | 1 (or Cmd+click) |
+| Daily overhead @ 50 logs | ~25 min | ~4 min |
 
-**Result: 96% reduction in logging time | 84% reduction in daily administrative overhead**
+That is roughly **96% less time per log** and **~84% less daily overhead** for that slice alone.
+
+### Text & call
+Targets (e.g. time-to-text, time-to-call) and acceptance criteria are in [docs/PRD.md](docs/PRD.md) §3 and §5 — Juliet implements the integrated flows; treat those KPIs as product goals unless you have your own measurements.
 
 ## What I Learned
 
 ### Product Thinking
-- **Observe actual workflows**: The best product ideas come from watching real users struggle
-- **Question assumptions**: Just because a CRM is "enterprise-grade" doesn't mean its UX is optimal
-- **Measure impact**: Quantifying the problem (30s → 5s, 10 clicks → 1) makes the solution compelling
+- **Observe actual workflows**: The best ideas come from watching real users struggle.
+- **Question assumptions**: Enterprise CRMs are not guaranteed to be workflow-optimal.
+- **Measure where you can**: Logging math (30s → ~1s, many clicks → one) makes the pain tangible.
 
 ### Technical Skills
-- **API reverse engineering**: Used browser DevTools to capture and replicate API requests
-- **DOM manipulation**: Learned to inject UI elements into third-party applications safely
-- **User research**: Validated the problem with other leasing consultants before building
+- **API reverse engineering** — DevTools and replay for multiple vendors.
+- **DOM injection** — Safe UI inside a third-party app.
+- **Cross-origin scripting** — Tampermonkey grants, `@connect`, and bootstrap tabs.
 
 ### Documentation
-- **PRD structure**: Created a formal Product Requirements Document with acceptance criteria
-- **Visual communication**: Used mockups and sequence diagrams to clarify complex workflows
-- **Iterative thinking**: Planned MVP (required notes) vs. future enhancements (smart defaults)
+- **PRD** — Requirements, AC, sequence diagrams, changelog ([docs/PRD.md](docs/PRD.md)).
+- **Iterative scope** — From logging MVP to full Leads hub (text + call + dual-mode).
 
 ## Project Status
 
-### ✅ MVP Complete
-- Problem validation and user research
-- Product Requirements Document with detailed acceptance criteria
-- UI/UX mockups and workflow sequence diagrams
-- Full Tampermonkey userscript implementation (1,328 lines)
-- API integration with Entrata CRM
-- localStorage-based preference persistence
-- Real-time visual feedback and error handling
+**Userscript:** 0.4.0 (`@version` in [src/entrata-quick-log.user.js](src/entrata-quick-log.user.js))  
+**PRD:** v2.1 (2026-03-12)
 
-### 📊 Validated Impact
-- **96% reduction** in activity logging time (30s → 1s per lead)
-- **90% reduction** in clicks (10 clicks → 1 click)
-- **84% reduction** in daily administrative overhead (25 min → 4 min for 50 leads)
+**Shipped capabilities** (see PRD FR-1–FR-6 for detail):
+- Dual-mode **log** (modal + Cmd+click) with template prefs
+- Dual-mode **text** via Heymarket (modal + Cmd+click), bootstrap login + Advanced fallback
+- Direct **call** via Courtesy Connection API
+- Per-row **call / text / log** buttons
 
-### 📋 Future Enhancements
-- Smart default values for notes field
-- Bulk activity logging via checkboxes
-- Hover-to-preview lead summaries
+**Roadmap** (PRD §9): LLM-assisted drafts, hover-to-preview, analytics — future iterations.
 
 ## Repository Structure
 
 ```
 juliet-v1/
-├── README.md              # You are here
+├── README.md                         # You are here
 ├── docs/
-│   ├── PRD.md            # Full Product Requirements Document
-│   └── assets/           # Mockups and screenshots
+│   ├── PRD.md                        # Product requirements, AC, diagrams, changelog
+│   ├── entrata-leads-structure.html  # Reference: Leads DOM / structure notes
+│   └── assets/                       # Mockups and screenshots
 ├── src/
-│   └── entrata-quick-log.user.js  # Complete userscript (1,328 lines)
-└── .gitignore            # Git ignore rules
+│   └── entrata-quick-log.user.js     # Tampermonkey userscript (Entrata + Heymarket + CC)
+└── .gitignore
 ```
 
 ## Project Overview
 
-**What it does**: Reduces lead activity logging from 30 seconds to 1 second through browser-side workflow automation
+**What it does:** Brings log, text, and call actions onto the Entrata Leads page with one-time configuration and minimal per-lead friction.
 
-**Key artifacts**:
-- [Product Requirements Document](docs/PRD.md) - Detailed functional requirements and acceptance criteria
-- [Implementation](src/entrata-quick-log.user.js) - Complete userscript with API integration
+**Key artifacts:**
+- [Product Requirements Document](docs/PRD.md)
+- [Implementation](src/entrata-quick-log.user.js)
 
-**Built with**: JavaScript, Tampermonkey, localStorage, Entrata API reverse engineering, developed using Cursor AI
+**Built with:** JavaScript, Tampermonkey (`GM_xmlhttpRequest`, `GM_getValue`, `GM_setValue`), localStorage, Entrata / Heymarket / Courtesy Connection integration — developed with Cursor AI.
 
 ## About
 
-This project was born from real frustration with inefficient enterprise software. I believe that good software should respect users' time and intelligence — and when it doesn't, there's an opportunity to build something better.
+This project started from frustration with inefficient enterprise workflows. Good software should respect users' time; when it does not, there is room to build something better.
 
-**Status**: MVP Complete (v0.2.0)  
-**Built**: February 2026  
-**Purpose**: Portfolio demonstration of product management and technical problem-solving
+**Purpose:** Portfolio piece — product thinking plus technical execution.
 
 ---
 
-*"What's in a name? That which we call a rose by any other name would smell as sweet."* — Juliet 
+*"What's in a name? That which we call a rose by any other name would smell as sweet."* — Juliet

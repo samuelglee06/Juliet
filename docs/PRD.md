@@ -1,7 +1,7 @@
 
 ---
 project: Juliet
-status: draft
+status: active
 last_updated: 2026-03-12
 version: 2.1
 owner: samuel lee

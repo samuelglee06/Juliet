@@ -2,7 +2,7 @@
 // @name         Juliet 
 // @namespace    http://tampermonkey.net/
 // @version      0.4.0
-// @description  Streamline lead activity logging in Entrata CRM
+// @description  Leads hub: log, text (Heymarket), and call (Courtesy Connection) from Entrata
 // @author       Samuel Lee
 // @match        https://*.entrata.com/*module=applications*
 // @match        https://ach.entrata.com/*
