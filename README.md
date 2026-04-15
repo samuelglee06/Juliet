@@ -69,7 +69,7 @@ Each lead row gets three color-coded actions: **call** (green), **text** (yellow
 
 ## Technical Approach
 
-**Platform:** [Tampermonkey](https://www.tampermonkey.net/) userscript — [src/entrata-quick-log.user.js](src/entrata-quick-log.user.js) (v0.5.2).
+**Platform:** [Tampermonkey](https://www.tampermonkey.net/) userscript — [src/entrata-quick-log.user.js](src/entrata-quick-log.user.js) (v0.7.0).
 
 **Why Tampermonkey + privileged APIs?**
 - No dedicated backend — logic runs in the browser.
@@ -115,10 +115,10 @@ Targets (e.g. time-to-text, time-to-call) and acceptance criteria are in [docs/P
 
 ## Project Status
 
-**Userscript:** 0.5.2 (`@version` in [src/entrata-quick-log.user.js](src/entrata-quick-log.user.js))  
-**PRD:** v2.1 (2026-03-12)
+**Userscript:** 0.7.0 (`@version` in [src/entrata-quick-log.user.js](src/entrata-quick-log.user.js))  
+**PRD:** v2.4.0 (2026-04-15)
 
-**Shipped capabilities** (see PRD FR-1–FR-6 for detail):
+**Shipped capabilities** (see PRD FR-1–FR-7 for detail):
 - Dual-mode **log** (modal + Cmd+click) with template prefs
 - Dual-mode **text** via Heymarket (modal + Cmd+click), bootstrap login + Advanced fallback
 - Direct **call** via Courtesy Connection API

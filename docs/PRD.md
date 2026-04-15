@@ -3,7 +3,7 @@
 project: Juliet
 status: active
 last_updated: 2026-04-15
-version: 2.2.2
+version: 2.4.0
 owner: samuel lee
 
 ---
@@ -166,6 +166,10 @@ main
 
 ## 9. Future Roadmap
 
+- **Deferred — Heymarket auto-archive after Entrata send**
+	- **Priority:** TBD
+	- **Description:** Optionally call Heymarket `POST /v3/conversation/update` after a successful outbound send (same payload as manual Close chat) to reduce inbox clutter from bulk outreach. Removed from the userscript pending a reliable implementation; may be revisited.
+
 - **v3 — LLM Integration**
 	- **Priority:** P3
 	- **Description:** Use a language model to suggest activity notes, draft outbound text messages, and surface lead context inline on the Leads page.
@@ -181,6 +185,15 @@ main
 
 ---
 ## 10. Changelog
+* **v2.4.0 (2026-04-15):** Removed **FR-8** (auto archive / close Heymarket chat after Entrata send) from implementation; documented as deferred in §9. Userscript **0.7.0**.
+* **v2.3.7 (2026-04-15):** FR-8: delayed multi-attempt `GET /v3/conversation/{id}` to resolve `assigned` after send (row may not exist immediately); broader assignee field parsing; warn when `assigned` cannot be resolved (manual Close chat always includes it).
+* **v2.3.6 (2026-04-15):** FR-8: align with Network capture of manual Close chat — **one** `POST /v3/conversation/update` with `status: archived` and fields `id`, `muted`, `assigned`, `inbox_id`, `email_noti` only; removed extra `closed` / `team_id` attempts.
+* **v2.3.5 (2026-04-15):** FR-8: after a successful `archived` update, send **`closed`** as well (matches “close chat” / active inbox behavior; `archived` alone often returned HTTP 200 without removing thread from active view).
+* **v2.3.4 (2026-04-15):** FR-8: ignore `conversation: false` and other non-object `conversation` values (previously produced boolean `false` as id → `HTTP 400`); normalize ids to positive integers only.
+* **v2.3.3 (2026-04-15):** FR-8: send-response conversation id no longer taken from ambiguous root `id` / generic `data.id` / `result.id` (often message ids → HTTP 404); prefer explicit `conversation_*` and nested `message.conversation`, `messages[0]`, etc.
+* **v2.3.2 (2026-04-15):** FR-8: broader send-response id parsing; archive retries with `team_id`, `GET /v3/conversation/{id}` for assignee, alternate `status: closed`; chat-scoped Referer; diagnostics when archive is skipped or fails.
+* **v2.3.1 (2026-04-15):** FR-8: archive-after-send now uses verified **`POST /v3/conversation/update`** (`status: archived`); optional `assigned` from send response when present; removed heuristic close endpoints.
+* **v2.3.0 (2026-04-15):** Added FR-8: optional close Heymarket conversation after successful Entrata-originated send; checkbox in Quick Text settings; best-effort API attempts using conversation id from send response.
 * **v2.2.2 (2026-04-15):** FR-7: default Heymarket pre-flight pacing reduced from 5s to **2s** (`HEYMARKET_QUEUE_GAP_MS` 2000 ms); every queued send uses the pre-flight wait including the first in a batch.
 * **v2.2.1 (2026-04-15):** FR-7 refinement: 5s pre-flight wait before **each** Heymarket API sequence (including the first send) so pacing is visible on single-click; removed redundant inter-job sleep that duplicated the gap.
 * **v2.2 (2026-04-15):** Added FR-7 (Heymarket send queue): FIFO pacing of Heymarket compliance + send with 5s minimum gap after each completion; row and compose UI show queued vs active send state; documented in workflow diagram and technical implementation.

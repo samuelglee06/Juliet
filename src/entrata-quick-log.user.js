@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Juliet 
 // @namespace    http://tampermonkey.net/
-// @version      0.5.2
+// @version      0.7.0
 // @description  Leads hub: log, text (Heymarket), and call (Courtesy Connection) from Entrata
 // @author       Samuel Lee
 // @match        https://*.entrata.com/*module=applications*
@@ -2541,20 +2541,20 @@
         return digits.length > 0 ? digits : null;
     }
 
-    function gmRequestJSON({ method, url, payload, securityToken }) {
+    function gmRequestJSON({ method, url, payload, securityToken, referer }) {
+        const refererVal = referer || 'https://app.heymarket.com/chats/';
+        const m = (method || 'POST').toUpperCase();
         return new Promise((resolve, reject) => {
-            GM_xmlhttpRequest({
-                method,
+            const req = {
+                method: m,
                 url,
                 anonymous: false,
                 headers: {
                     'Accept': 'application/json, text/plain, */*',
-                    'Content-Type': 'application/json;charset=UTF-8',
                     'X-Emb-Security-Token': securityToken,
                     'Origin': 'https://app.heymarket.com',
-                    'Referer': 'https://app.heymarket.com/chats/'
+                    'Referer': refererVal
                 },
-                data: JSON.stringify(payload),
                 onload: (response) => {
                     if (response.status >= 200 && response.status < 300) {
                         resolve(response);
@@ -2562,12 +2562,18 @@
                     }
                     const err = new Error(`HTTP ${response.status}`);
                     err.status = response.status;
+                    err.responseText = response.responseText;
                     reject(err);
                 },
                 onerror: (error) => {
                     reject(new Error(error?.error || 'Network error'));
                 }
-            });
+            };
+            if (m !== 'GET' && m !== 'HEAD' && payload !== undefined && payload !== null) {
+                req.headers['Content-Type'] = 'application/json;charset=UTF-8';
+                req.data = JSON.stringify(payload);
+            }
+            GM_xmlhttpRequest(req);
         });
     }
 
