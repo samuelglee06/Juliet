@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Juliet 
 // @namespace    http://tampermonkey.net/
-// @version      0.4.0
+// @version      0.4.2
 // @description  Leads hub: log, text (Heymarket), and call (Courtesy Connection) from Entrata
 // @author       Samuel Lee
 // @match        https://*.entrata.com/*module=applications*
@@ -1966,6 +1966,15 @@
         };
 
         loginBtn.addEventListener('click', () => {
+            if (bootstrapMessageHandler) {
+                window.removeEventListener('message', bootstrapMessageHandler);
+                bootstrapMessageHandler = null;
+            }
+            if (bootstrapTimeoutId != null) {
+                clearTimeout(bootstrapTimeoutId);
+                bootstrapTimeoutId = null;
+            }
+
             const popup = window.open(
                 HEYMARKET_ORIGIN + '/chats/',
                 'heymarketAuth',
@@ -1975,6 +1984,10 @@
                 statusLine.textContent = 'Popup blocked. Please allow popups for this site and try again.';
                 return;
             }
+            try {
+                popup.focus();
+            } catch (_) {}
+
             statusLine.textContent = 'Log in to Heymarket in the popup; credentials will be captured automatically.';
             statusLine.classList.remove('connected');
 
@@ -2731,9 +2744,11 @@
             console.log('[Juliet] Heymarket config captured and saved');
             if (window.opener && !window.opener.closed) {
                 try {
+                    // targetOrigin must not use window.opener.origin — reading .origin on a
+                    // cross-origin opener throws SecurityError; Entrata still validates event.origin.
                     window.opener.postMessage(
                         { source: JULIET_BOOTSTRAP_SOURCE, config },
-                        window.opener.origin
+                        '*'
                     );
                 } catch (e) {
                     console.warn('[Juliet] Could not postMessage to opener', e);
@@ -2832,7 +2847,7 @@
             console.log('[Juliet] Courtesy Connection form template captured and saved');
             if (window.opener && !window.opener.closed) {
                 try {
-                    window.opener.postMessage({ source: JULIET_CC_BOOTSTRAP_SOURCE, config }, window.opener.origin);
+                    window.opener.postMessage({ source: JULIET_CC_BOOTSTRAP_SOURCE, config }, '*');
                 } catch (e) {
                     console.warn('[Juliet] Could not postMessage to opener', e);
                 }

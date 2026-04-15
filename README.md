@@ -46,6 +46,8 @@ Juliet turns the Leads table into a **single interaction surface**:
 - **Text** (yellow preferences): default message + Heymarket connection — use **Login to Heymarket** for auto-captured credentials, or **Advanced** for manual token / team / inbox (see [PRD](docs/PRD.md) FR-6).
 - **Call**: Courtesy Connection credentials configured once in-script.
 
+**Switching Heymarket accounts:** The login popup uses your browser’s existing Heymarket session. To use a different account, sign **out** inside the Heymarket popup (or clear site data for `app.heymarket.com`), then sign in as the other user and wait for auto-capture—or paste token, team ID, and inbox ID under **Advanced** and save. Juliet stores credentials in both Tampermonkey **`GM_*` storage** and **`localStorage`** (`juliet_heymarket_config`); if values look stuck after editing one place, clear both or save again from the Text settings modal.
+
 ### 2. Act from each row
 Each lead row gets three color-coded actions: **call** (green), **text** (yellow), **log** (blue).
 
@@ -67,7 +69,7 @@ Each lead row gets three color-coded actions: **call** (green), **text** (yellow
 
 ## Technical Approach
 
-**Platform:** [Tampermonkey](https://www.tampermonkey.net/) userscript — [src/entrata-quick-log.user.js](src/entrata-quick-log.user.js) (v0.4.0).
+**Platform:** [Tampermonkey](https://www.tampermonkey.net/) userscript — [src/entrata-quick-log.user.js](src/entrata-quick-log.user.js) (v0.4.2).
 
 **Why Tampermonkey + privileged APIs?**
 - No dedicated backend — logic runs in the browser.
@@ -113,7 +115,7 @@ Targets (e.g. time-to-text, time-to-call) and acceptance criteria are in [docs/P
 
 ## Project Status
 
-**Userscript:** 0.4.0 (`@version` in [src/entrata-quick-log.user.js](src/entrata-quick-log.user.js))  
+**Userscript:** 0.4.2 (`@version` in [src/entrata-quick-log.user.js](src/entrata-quick-log.user.js))  
 **PRD:** v2.1 (2026-03-12)
 
 **Shipped capabilities** (see PRD FR-1–FR-6 for detail):
