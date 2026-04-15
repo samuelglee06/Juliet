@@ -2,8 +2,8 @@
 ---
 project: Juliet
 status: active
-last_updated: 2026-03-12
-version: 2.1
+last_updated: 2026-04-15
+version: 2.2.2
 owner: samuel lee
 
 ---
@@ -39,6 +39,7 @@ The current Entrata lead management workflow imposes a significant "friction tax
 | **FR-4** | Courtesy Connection Call             | • Click `call` button immediately triggers an outbound call via Courtesy Connection API using the lead's phone number<br>• No modal or modifier key — calling is always a direct action<br>• Button state updates to indicate call initiated<br>• Failed requests display error state without breaking UI | P0 |
 | **FR-5** | Per-Row Action Button Set            | • Each lead row contains three color-coded action buttons: green `call`, yellow `text`, blue `log`<br>• Buttons are visually distinct, clearly labeled, and accessible during page scrolling<br>• Buttons are injected into the DOM without disrupting the existing Entrata row layout | P0 |
 | **FR-6** | Heymarket Auth Bootstrap & Advanced Fallback | • Quick Text config modal includes a `Login to Heymarket` button that opens Heymarket authentication flow<br>• After successful login, script auto-captures and fills `X-Emb-Security-Token`, `teamId`, and `inboxId`<br>• Captured values persist via localStorage for reuse across sessions<br>• Manual input for `X-Emb-Security-Token`, `teamId`, and `inboxId` remains available under an `Advanced` collapsible section<br>• Auto-captured values can be reviewed and edited in `Advanced` before saving<br>• If auto-capture fails or token expires, UI shows recoverable error and manual path remains fully functional | P0 |
+| **FR-7** | Heymarket Send Queue (rate pacing) | • Cmd+quick send and compose-modal send both enqueue a **FIFO** Heymarket send (compliance + outbound); at most one such sequence runs at a time<br>• Before **every** outbound attempt (including the first), the script waits **2 seconds** after validation, then calls Heymarket APIs<br>• Additional queued sends run **serially**; pacing uses the same **2 second** pre-flight wait per job (not a second stacked delay between jobs)<br>• Users see **visible feedback** while waiting (e.g. queue position on the row `text` button such as `·1`, `·2`, and compose-modal queue copy) distinct from active sending (`⏳`), success, and error states<br>• Queue state is **not** persisted across page reloads | P0 |
 
 ## 6. Technical Implementation
 * **Platform:** Browser-side injection via **Tampermonkey** (JavaScript).
@@ -47,6 +48,7 @@ The current Entrata lead management workflow imposes a significant "friction tax
 * **Data Persistence:** User preferences (log template, text template, API credentials) stored in browser localStorage for session continuity.
 * **Cmd Key Listener:** `document.keydown` / `keyup` event listeners toggle a global `cmdHeld` flag; all `log` and `text` buttons update their color class reactively.
 * **Heymarket API:** POST requests to compliance and outbound messaging endpoints using browser-authenticated request headers.
+* **FR-7 Send queue:** In-page FIFO queue serializes Heymarket compliance + send; configurable pre-flight wait (`HEYMARKET_QUEUE_GAP_MS`, default 2000 ms) before **each** job’s compliance call (including the first); not persisted across reloads.
 * **FR-6 Auth Bootstrap:** `Login to Heymarket` flow captures `X-Emb-Security-Token`, `teamId`, and `inboxId` from active authenticated context and stores them in localStorage.
 * **FR-6 Advanced Fallback:** Manual entry for `X-Emb-Security-Token`, `teamId`, and `inboxId` remains available under `Advanced`; manual values override auto-filled values when edited and saved.
 * **Courtesy Connection API:** POST request to initiate an outbound call; auth credentials stored in localStorage.
@@ -67,6 +69,7 @@ sequenceDiagram
     participant LogModal as Log Modal
     participant ComposeModal as Compose Modal
     participant EntrataAPI as Entrata API
+    participant HeymarketQ as Heymarket Send Queue
     participant HeymarketAPI as Heymarket API
     participant CCAPI as Courtesy Connection API
 
@@ -104,16 +107,20 @@ sequenceDiagram
         alt Cmd held (Quick Text — button darkens)
             User->>TextBtn: Cmd+Click
             TextBtn->>Storage: Retrieve text template
-            TextBtn->>HeymarketAPI: POST message with lead phone
-            HeymarketAPI-->>TextBtn: 200 OK
+            TextBtn->>HeymarketQ: Enqueue send (FIFO, 2s pre-flight pacing)
+            HeymarketQ->>HeymarketAPI: POST compliance + send with lead phone
+            HeymarketAPI-->>HeymarketQ: 200 OK
+            HeymarketQ-->>TextBtn: Success feedback
             TextBtn-->>User: Success feedback
         else Normal click
             User->>TextBtn: Click
             TextBtn->>Storage: Retrieve text template
             TextBtn->>ComposeModal: Open compose modal (pre-filled)
             User->>ComposeModal: Edit message and send
-            ComposeModal->>HeymarketAPI: POST message with lead phone
-            HeymarketAPI-->>ComposeModal: 200 OK
+            ComposeModal->>HeymarketQ: Enqueue send (FIFO, 2s pre-flight pacing)
+            HeymarketQ->>HeymarketAPI: POST compliance + send with lead phone
+            HeymarketAPI-->>HeymarketQ: 200 OK
+            HeymarketQ-->>ComposeModal: OK
             ComposeModal-->>User: Close, success feedback
         end
     else Place a call
@@ -133,6 +140,7 @@ sequenceDiagram
 * **Calls are always direct** — No extra steps for Courtesy Connection; one click places the call
 * **No page navigation** — All interactions are asynchronous and stay on the Leads page
 * **Persistent settings** — Templates and API credentials survive browser sessions via localStorage
+* **Heymarket send pacing** — FR-7 queue reduces burst traffic and lowers risk of Heymarket bot-flag / lockout from rapid sends
 
 ### FR-6 Configuration Path
 - **Auto path:** User opens Quick Text config modal -> clicks `Login to Heymarket` -> completes Heymarket login -> script captures `X-Emb-Security-Token`, `teamId`, and `inboxId` -> values saved to localStorage.
@@ -173,6 +181,9 @@ main
 
 ---
 ## 10. Changelog
+* **v2.2.2 (2026-04-15):** FR-7: default Heymarket pre-flight pacing reduced from 5s to **2s** (`HEYMARKET_QUEUE_GAP_MS` 2000 ms); every queued send uses the pre-flight wait including the first in a batch.
+* **v2.2.1 (2026-04-15):** FR-7 refinement: 5s pre-flight wait before **each** Heymarket API sequence (including the first send) so pacing is visible on single-click; removed redundant inter-job sleep that duplicated the gap.
+* **v2.2 (2026-04-15):** Added FR-7 (Heymarket send queue): FIFO pacing of Heymarket compliance + send with 5s minimum gap after each completion; row and compose UI show queued vs active send state; documented in workflow diagram and technical implementation.
 * **v2.1 (2026-03-12):** Added FR-6 (Heymarket Auth Bootstrap & Advanced Fallback): Quick Text modal now includes `Login to Heymarket` bootstrap path for auto-capturing `X-Emb-Security-Token`, `teamId`, and `inboxId`, while preserving manual entry under `Advanced`; documented persistence and non-breaking fallback behavior.
 * **v2.0 (2026-03-10):** Expanded scope to full lead interaction suite; updated FR-1 to dual-mode logging (modal + Cmd+click with visual mode indicator); added FR-3 (Heymarket text with dual-mode Cmd+click and compose modal), FR-4 (Courtesy Connection direct call via API), FR-5 (per-row color-coded action button set); added Section 8 Development Notes with Git branching strategy; moved Contextual Intelligence and LLM Integration to v3 roadmap
 * **v1.3 (2026-02-14):** Expanded functional requirements based on UI mockup; added FR-2 (template configuration) and FR-3 (one-click logging) with detailed acceptance criteria; Notes field is required to ensure Entrata API compliance

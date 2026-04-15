@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Juliet 
 // @namespace    http://tampermonkey.net/
-// @version      0.4.2
+// @version      0.5.2
 // @description  Leads hub: log, text (Heymarket), and call (Courtesy Connection) from Entrata
 // @author       Samuel Lee
 // @match        https://*.entrata.com/*module=applications*
@@ -40,6 +40,12 @@
     const CC_API_DEFAULT_BASE = 'https://www.courtesyconnection.com';
     const CC_APP_ORIGIN = 'https://www.courtesyconnection.com';
     const CC_CALL_PATH = '/CallTimeline/UnrecordedOutboundCall';
+    /** Wait this long after a send is dequeued (after validation) before calling Heymarket compliance — every send, including the first */
+    const HEYMARKET_QUEUE_GAP_MS = 2000;
+
+    /** @type {Array<{ phone: string, message: string, button: HTMLButtonElement, onComplete?: function(): void, composeBackdrop?: HTMLElement, composeUi?: { sendBtn: HTMLButtonElement, statusEl?: HTMLElement } }>} */
+    let heymarketSendQueue = [];
+    let heymarketQueueDrainPromise = null;
 
     // Tracks whether the Cmd (Meta) key is currently held down
     let cmdHeld = false;
@@ -842,7 +848,7 @@
             const tokenizedMessage = applyLeadTokens(template.message.trim(), leadName);
 
             if (e.metaKey || cmdHeld) {
-                sendHeymarketText({
+                enqueueHeymarketText({
                     phone,
                     message: tokenizedMessage,
                     button: this
@@ -1501,6 +1507,13 @@
         messageGroup.appendChild(validationMsg);
         body.appendChild(messageGroup);
 
+        const queueStatusEl = document.createElement('div');
+        queueStatusEl.className = 'juliet-validation-msg';
+        queueStatusEl.style.display = 'none';
+        queueStatusEl.style.color = '#666';
+        queueStatusEl.style.fontSize = '12px';
+        body.appendChild(queueStatusEl);
+
         const footer = document.createElement('div');
         footer.className = 'juliet-modal-footer';
 
@@ -1526,18 +1539,28 @@
         modal.appendChild(footer);
         backdrop.appendChild(modal);
 
+        const escapeHandler = (e) => {
+            if (e.key === 'Escape') cancelComposeOrClose();
+        };
+
         const closeModal = () => {
-            backdrop.remove();
+            if (backdrop.isConnected) {
+                backdrop.remove();
+            }
             document.removeEventListener('keydown', escapeHandler);
         };
 
-        const escapeHandler = (e) => {
-            if (e.key === 'Escape') closeModal();
-        };
+        function cancelComposeOrClose() {
+            heymarketSendQueue = heymarketSendQueue.filter(function(j) {
+                return j.composeBackdrop !== backdrop;
+            });
+            refreshHeymarketQueueUi();
+            closeModal();
+        }
 
-        cancelBtn.addEventListener('click', closeModal);
+        cancelBtn.addEventListener('click', cancelComposeOrClose);
         backdrop.addEventListener('click', (e) => {
-            if (e.target === backdrop) closeModal();
+            if (e.target === backdrop) cancelComposeOrClose();
         });
         document.addEventListener('keydown', escapeHandler);
 
@@ -1549,14 +1572,13 @@
                 return;
             }
 
-            sendBtn.disabled = true;
-            sendBtn.textContent = 'Sending...';
-
-            sendHeymarketText({
+            enqueueHeymarketText({
                 phone,
                 message: applyLeadTokens(message, leadName),
                 button: rowButton,
-                onComplete: closeModal
+                onComplete: closeModal,
+                composeBackdrop: backdrop,
+                composeUi: { sendBtn, statusEl: queueStatusEl }
             });
         });
 
@@ -2377,12 +2399,83 @@
         });
     }
 
-    function sendHeymarketText({ phone, message, button, onComplete }) {
-        if (!button) return;
+    function sleepMs(ms) {
+        return new Promise(function(resolve) {
+            setTimeout(resolve, ms);
+        });
+    }
+
+    function refreshHeymarketQueueUi() {
+        const n = heymarketSendQueue.length;
+        heymarketSendQueue.forEach(function(job, idx) {
+            const pos = idx + 1;
+            const btn = job.button;
+            if (btn && btn.classList.contains('juliet-quick-text-btn')) {
+                btn.disabled = true;
+                btn.textContent = '\u00b7' + pos;
+                btn.title = 'Queued ' + pos + ' of ' + n + ' — Heymarket sends run one at a time, ' + (HEYMARKET_QUEUE_GAP_MS / 1000) + 's between each';
+            }
+            if (job.composeUi) {
+                const cu = job.composeUi;
+                if (cu.sendBtn) {
+                    cu.sendBtn.textContent = 'Queued…';
+                    cu.sendBtn.disabled = true;
+                }
+                if (cu.statusEl) {
+                    cu.statusEl.textContent = n === 1
+                        ? 'Send will start shortly (Heymarket pacing queue).'
+                        : (idx === 0
+                            ? 'Next in queue — waiting for the active Heymarket send to finish…'
+                            : idx + ' send(s) ahead (Heymarket pacing queue).');
+                    cu.statusEl.style.display = 'block';
+                }
+            }
+        });
+    }
+
+    function enqueueHeymarketText(payload) {
+        heymarketSendQueue.push(payload);
+        refreshHeymarketQueueUi();
+        if (!heymarketQueueDrainPromise) {
+            heymarketQueueDrainPromise = (async function drainHeymarketQueue() {
+                try {
+                    while (heymarketSendQueue.length > 0) {
+                        refreshHeymarketQueueUi();
+                        const job = heymarketSendQueue.shift();
+                        refreshHeymarketQueueUi();
+                        await executeHeymarketText(job);
+                    }
+                } finally {
+                    heymarketQueueDrainPromise = null;
+                }
+            })();
+        }
+    }
+
+    /**
+     * Run one Heymarket text send (compliance + send). Returns a Promise settled when the attempt finishes.
+     */
+    function executeHeymarketText(job) {
+        const phone = job.phone;
+        const message = job.message;
+        const button = job.button;
+        const onComplete = job.onComplete;
+        const composeUi = job.composeUi;
+
+        if (!button) {
+            return Promise.resolve();
+        }
 
         button.disabled = true;
-        button.textContent = '⏳';
+        button.textContent = '\u23f3';
         button.style.background = 'linear-gradient(to bottom, #f0ad4e 0%, #ec971f 100%)';
+        if (composeUi && composeUi.sendBtn) {
+            composeUi.sendBtn.textContent = 'Sending...';
+            composeUi.sendBtn.disabled = true;
+        }
+        if (composeUi && composeUi.statusEl) {
+            composeUi.statusEl.style.display = 'none';
+        }
 
         const config = getHeymarketConfig() || {};
         const hasSessionConfig = Boolean(config.securityToken && config.teamId && config.inboxId);
@@ -2390,14 +2483,14 @@
         if (!hasSessionConfig) {
             showError(button, 'Missing Heymarket session. Open Text settings and use "Login to Heymarket" or enter credentials under Advanced.');
             if (onComplete) onComplete();
-            return;
+            return Promise.resolve();
         }
 
         const recipient = normalizeHeymarketRecipient(phone);
         if (!recipient) {
             showError(button, `Invalid recipient phone: ${phone}`);
             if (onComplete) onComplete();
-            return;
+            return Promise.resolve();
         }
 
         function isAuthFailure(statusOrError) {
@@ -2409,9 +2502,14 @@
             alert('Heymarket session appears invalid or expired. Click the Text settings button and use "Login to Heymarket" or update credentials in Advanced.');
         }
 
-        runHeymarketCompliance(message, config)
-            .then(() => sendHeymarketMessage(recipient, message, config))
-            .then((response) => {
+        return sleepMs(HEYMARKET_QUEUE_GAP_MS)
+            .then(function() {
+                return runHeymarketCompliance(message, config);
+            })
+            .then(function() {
+                return sendHeymarketMessage(recipient, message, config);
+            })
+            .then(function(response) {
                 if (response.status >= 200 && response.status < 300) {
                     showSuccess(button);
                 } else {
@@ -2422,7 +2520,7 @@
                     }
                 }
             })
-            .catch((error) => {
+            .catch(function(error) {
                 if (isAuthFailure(error)) {
                     showAuthRecoverableMessage();
                 } else {
@@ -2430,7 +2528,7 @@
                     showError(button, errorMsg);
                 }
             })
-            .finally(() => {
+            .finally(function() {
                 if (onComplete) onComplete();
             });
     }
